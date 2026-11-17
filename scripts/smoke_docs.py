@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import sys
+import json
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
@@ -30,7 +31,7 @@ os.environ["NOTICE_AUTO_IMPORT"] = "0"
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"   # 本例不测模型，避免误连
 
 from app import create_app  # noqa: E402
-from app.auth import generate_password_hash  # noqa: E402
+from app.auth import COMMUNITY_LEAD_PERMS, generate_password_hash  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models import Notice, User, Weekly  # noqa: E402
 
@@ -52,13 +53,16 @@ def login(c, u, p):
     return c.post("/login", data={"username": u, "password": p}, follow_redirects=False)
 
 
-def ensure_user(username, role, org, pwd):
+def ensure_user(username, role, org, pwd, perms=None):
     u = User.query.filter_by(username=username).first()
     if not u:
         u = User(username=username, name=username, role=role, org=org,
                  password_hash=generate_password_hash(pwd), status="active",
                  created_by="smoke")
         db.session.add(u)
+        db.session.commit()
+    if perms is not None:
+        u.perms_json = json.dumps(sorted(perms), ensure_ascii=False)
         db.session.commit()
     return u
 
@@ -68,7 +72,8 @@ with app.app_context():
     # 只清这一张表，不动业务数据 —— 周报之外的首录/工单还要拿来验同源。
     Weekly.query.filter_by(period="2026-W43").delete()
     db.session.commit()
-    ensure_user("t_comm", "community", "幸福里社区", "comm123")
+    ensure_user("t_comm", "community", "幸福里社区", "comm123",
+                COMMUNITY_LEAD_PERMS)
     ensure_user("t_prop", "property", "幸福里物业", "prop123")
     ensure_user("t_street", "street", "幸福里街道办事处", "street123")
 

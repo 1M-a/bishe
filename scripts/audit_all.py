@@ -216,7 +216,7 @@ PUBLIC_OK = {
     ("app/api/portal.py", "my_tickets"), ("app/api/portal.py", "ticket_detail"),
     ("app/api/portal.py", "notices"), ("app/api/portal.py", "contacts"),
     ("app/api/portal.py", "roles"),
-    ("app/portal.py", "report"), ("app/portal.py", "query"),
+    ("app/portal.py", "home"), ("app/portal.py", "report"), ("app/portal.py", "query"),
     ("app/portal.py", "notices"), ("app/portal.py", "contacts"),
 }
 
@@ -522,9 +522,11 @@ def group_d():
         "函数声明提升会静默覆盖强版本，转义形同虚设")
 
     # 裸 fetch 绕开统一通道层：没有超时归一、没有 .netbar 提示
+    # 用 rglob 把居民端 portal/*.html 也算进来；base.html 是定义 api() 的地方，
+    # pending.html 是审批等待页，二者例外。
     allow = {"base.html", "pending.html"}
     bare = []
-    for p in tpl.glob("*.html"):
+    for p in tpl.rglob("*.html"):
         if p.name in allow:
             continue
         for i, ln in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):

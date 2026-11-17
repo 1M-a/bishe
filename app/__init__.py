@@ -243,6 +243,8 @@ def create_app(env="dev"):
     from app.api.policy import bp as policy_bp
     from app.api.insight import bp as insight_bp
     from app.api.collab import bp as collab_bp
+    from app.api.meetings import bp as meetings_bp
+    from app.api.feedback import bp as feedback_bp
     app.register_blueprint(fde_bp, url_prefix="/api/fde")
     app.register_blueprint(tasks_bp, url_prefix="/api/tasks")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
@@ -266,6 +268,8 @@ def create_app(env="dev"):
     # Agent 协作轨迹：把"哪个 Agent 定了什么、谁不同意、谁裁定"落成可查记录，
     # 与 audit_log 分工不同（审计给监管看，轨迹给内部复盘/答辩看）
     app.register_blueprint(collab_bp, url_prefix="/api/collab")
+    app.register_blueprint(meetings_bp, url_prefix="/api/meetings")
+    app.register_blueprint(feedback_bp, url_prefix="/api/feedback")
     # 人员底册（街道下发的残疾人 / 防溺水 / 留守儿童台账）。
     # 社区角色只看本社区、街道看全街道，收窄在 app/personbook.py:scoped()。
     from app.api.persons import bp as persons_bp

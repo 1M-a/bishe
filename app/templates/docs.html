@@ -1,11 +1,16 @@
 {% extends "base.html" %}
-{% block title %}发文台 · 极简减负平台{% endblock %}
-{% block page_title %}发文台{% endblock %}
-{% block page_sub %}
-拟稿 → 核稿 → 签发 → 用印 → 分发 → 归档；上行文必须有签发人，密级决定谁能看
-{% endblock %}
+{% block title %}收发文 · 正式发文{% endblock %}
+{% block page_title %}收发文{% endblock %}
+{% block page_sub %}正式发文办理与归档{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+  {% if can('notice.view') %}
+  <a class="btn btn-ghost" href="{{ url_for('views.notices', recv='dispatched') }}">上级来文</a>
+  <a class="btn btn-ghost" href="{{ url_for('views.notices') }}">居民公告</a>
+  {% endif %}
+  <a class="btn btn-primary" href="{{ url_for('views.docs') }}">正式发文</a>
+</div>
 <a class="card stat stat-link col-3" href="{{ url_for('views.docs') }}?status=draft">
   <div class="ic" style="background:#e8eefb">✍️</div>
   <div><div class="num" id="cDraft">-</div><div class="lbl">待拟稿</div></div>
@@ -26,7 +31,7 @@
 <div class="card col-12">
   <div class="card-h">
     <h2>📄 公文台账</h2>
-    <span class="hint">发文与通知公告分表管理：公文有文号、签发人、密级，公告是给居民看的</span>
+    <span class="hint">拟稿、核稿、签发、分发、归档</span>
     {% if can('doc.manage') %}
     <button class="btn btn-primary" style="margin-left:auto" id="btnNew">+ 拟稿</button>
     {% endif %}
@@ -103,7 +108,7 @@
       <div class="field"><label>标题 <span style="color:#c0392b">*</span></label>
         <input class="inp" id="nTitle" placeholder="关于申请增补老旧小区消防设施的请示"></div>
       <div class="field"><label>正文 <span style="color:#c0392b">*</span>
-        <span style="color:var(--muted);font-weight:400">支持 Markdown；请示要一文一事</span></label>
+        <span style="color:var(--muted);font-weight:400">请示应一文一事</span></label>
         <textarea class="inp" id="nBody" rows="9" style="font-family:inherit;line-height:1.8"
           placeholder="街道办事处：&#10;&#10;我社区 3 栋高层住宅消防栓压力不足……&#10;&#10;妥否，请批示。"></textarea>
       </div>

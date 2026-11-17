@@ -1,17 +1,21 @@
 {% extends "base.html" %}
-{% block title %}报表中心 · 极简减负平台{% endblock %}
-{% block page_title %}报表中心{% endblock %}
-{% block page_sub %}报表Agent 一键汇总 · 脱敏后上报街道{% if not can('report.generate') %} · 当前为只读监督视角{% endif %}{% endblock %}
+{% block title %}材料报送 · 月报{% endblock %}
+{% block page_title %}材料报送{% endblock %}
+{% block page_sub %}周报与月报统一管理{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px">
+  {% if can('weekly.view') %}<a class="btn btn-ghost" href="{{ url_for('views.weekly') }}">周报</a>{% endif %}
+  <a class="btn btn-primary" href="{{ url_for('views.reports') }}">月报</a>
+</div>
 {% if can('report.generate') %}
 <!-- 生成器 -->
 <div class="card col-12">
   <div class="card-b" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
     <b>生成街道月报：</b>
     <input type="month" id="period" class="fde-input" style="min-height:0;height:38px;width:180px;padding:6px 12px;">
-    <button class="btn btn-primary" id="btnGen" onclick="gen()">⚡ 报表Agent 生成</button>
-    <span class="hint" style="color:var(--muted);font-size:12px">报表只含汇总数据，不含居民敏感明文</span>
+    <button class="btn btn-primary" id="btnGen" onclick="gen()">生成月报</button>
+    <span class="hint" style="color:var(--muted);font-size:12px">仅生成脱敏汇总</span>
   </div>
 </div>
 {% else %}
@@ -129,7 +133,7 @@ async function gen(){
       alert(`本月报表已存在，已重新生成为第 ${j.data.version} 版（覆盖原快照，审计日志留有记录）`);
     }
     showDetail(j.data); loadList();
-  } finally { btn.disabled=false; btn.textContent='⚡ 报表Agent 生成'; }
+  } finally { btn.disabled=false; btn.textContent='生成月报'; }
 }
 
 async function showDetail(d){

@@ -8,6 +8,7 @@
 4. SQLite 旧库没有 username 列，启动时做一次轻量补列（不引入 Alembic）。
 """
 from datetime import datetime
+import os
 import time
 from functools import wraps
 
@@ -45,6 +46,8 @@ PERMS = {
     "kb.manage": "维护知识库文档",
     "task.view": "查看任务看板",
     "task.manage": "下发 / 关闭任务",
+    "meeting.view": "查看居务会议与议事记录",
+    "meeting.manage": "组织会议 / 形成决议 / 发布居务公开",
     # 公告：notice.view 三方管理者都有；发布权归社区（属地口径），
     # 导入权归街道（上级文件由街道这一层接进来）——两权分离，避免"谁能进谁就能发"
     "notice.view": "查看通知公告",
@@ -71,6 +74,8 @@ PERMS = {
     # 只读一个权限点就够——底册由街道下发、系统导入，不该让人在页面里改，
     # 改了会与下发表对不上，下次导入又被覆盖，责任还说不清。
     "person.view": "查看人员底册",
+    "feedback.view": "查看模型纠错样本",
+    "feedback.manage": "提交模型纠错并形成规则",
 }
 
 # 权限点分组：只为管理页面好读，不参与任何校验。
@@ -78,13 +83,39 @@ PERMS = {
 PERM_GROUPS = [
     ("事项录入与档案", ["fde.create", "fde.view", "ledger.view"]),
     ("工单与任务", ["order.view", "order.handle", "order.verdict", "task.view", "task.manage"]),
+    ("居务会议", ["meeting.view", "meeting.manage"]),
     ("报表与监督", ["report.view", "report.generate", "audit.view"]),
     ("知识库与公告", ["kb.view", "kb.manage", "notice.view", "notice.manage",
                     "notice.import", "notice.receive", "notice.handle",
                     "notice.localize"]),
     ("公文与周报", ["doc.view", "doc.manage", "weekly.view", "weekly.manage"]),
     ("账号治理", ["user.manage"]),
+    ("模型改进", ["feedback.view", "feedback.manage"]),
 ]
+
+# 社区内部按岗位授权。角色仍保持 community，避免业务接口里已有的角色边界失效；
+# 具体岗位通过 User.perms_json 落地，既能最小授权，也能审计到人。
+COMMUNITY_BASE_PERMS = {
+    "fde.create", "fde.view", "order.view", "ledger.view", "task.view",
+    "notice.view", "notice.receive", "notice.handle", "notice.localize",
+    "report.view", "kb.view", "meeting.view", "doc.view", "weekly.view",
+    "person.view",
+}
+
+COMMUNITY_LEAD_PERMS = COMMUNITY_BASE_PERMS | {
+    "order.verdict", "report.generate", "notice.manage",
+    "meeting.manage", "doc.manage", "weekly.manage",
+}
+
+COMMUNITY_KB_PERMS = COMMUNITY_BASE_PERMS | {
+    "kb.manage", "feedback.view", "feedback.manage",
+}
+
+COMMUNITY_PERMISSION_PROFILES = {
+    "worker": {"name": "普通经办", "perms": COMMUNITY_BASE_PERMS},
+    "lead": {"name": "社区负责人", "perms": COMMUNITY_LEAD_PERMS},
+    "knowledge": {"name": "知识管理员", "perms": COMMUNITY_KB_PERMS},
+}
 
 # 角色 → 权限点集合（对应《总体设计》角色权限矩阵）
 ROLE_PERMS = {
@@ -92,21 +123,9 @@ ROLE_PERMS = {
     # 列在这里是为了让"四类使用者"在权限矩阵里有完整位置，
     # 也便于模板用同一套 can() 判断居民能看到什么。
     "resident": {"notice.view"},
-    # 社区工作者：一句话录入、看自己社区的工单进度与台账，可汇总上报；公告发布权在社区
-    # 收文签收与办文落地都归社区——街道只负责发，不替社区办
-    "community": {
-        "fde.create", "fde.view", "order.view", "ledger.view",
-        # 裁决权归社区：居委会在居民与物业之间充当仲裁方，这是三方治理的核心动作
-        "order.verdict",
-        "report.view", "report.generate", "kb.view", "kb.manage",
-        "task.view", "notice.view", "notice.manage",
-        "notice.receive", "notice.handle", "notice.localize",
-        # 公文与周报是社区的日常产出物：发文权、签发权都在社区
-        "doc.view", "doc.manage", "weekly.view", "weekly.manage",
-        # 底册：社区只看得到本社区的（ABAC 按 community 收窄，
-        # 见 app/personbook.py:_scoped），街道能看全街道
-        "person.view",
-    },
+    # 普通社区工作者只保留登记、查询、办理与只读材料权限。
+    # 发布、签发、裁决和知识维护改由用户级岗位模板授予。
+    "community": set(COMMUNITY_BASE_PERMS),
     # 物业：只做工单，看不到 FDE 原文、人口台账（最小必要原则）
     # doc.view 给的是"能看到发给自己的函"，密级过滤在 app/api/docs.py:_visible
     "property": {"order.view", "order.handle", "task.view", "notice.view", "doc.view"},
@@ -116,7 +135,7 @@ ROLE_PERMS = {
     # 公文与周报只读：街道是收文方，看得到报上来的请示与周报，但不替社区起草
     "street": {"order.view", "report.view", "audit.view", "kb.view",
                "task.view", "task.manage", "notice.view", "notice.import",
-               "doc.view", "weekly.view", "person.view"},
+               "doc.view", "weekly.view", "person.view", "meeting.view"},
 }
 
 # 系统管理员：全部权限点。这一行必须是 set(PERMS) 而不是手写清单，
@@ -178,12 +197,27 @@ ROLE_HOME = {
     "admin": "admin.users",
 }
 
-# 演示账号（首次启动自动写入，密码统一 123456；生产必须改）
-# admin 的密码单独设，因为它能改所有人的权限——演示库密码公开，
-# 用同一个 123456 等于任何人拿到链接就拿到了系统管理权。
+# 演示账号（首次启动自动写入；已有账号不会覆盖人工或部署后的改密结果）
+# admin 的初始密码单独设，因为它能改所有人的权限；正式部署后必须再单独改密。
+def _demo_admin_password() -> str:
+    """读取仅部署机持有的管理员演示密码，不把线上密码写进代码包。"""
+    path = os.environ.get(
+        "DEMO_ADMIN_PASSWORD_FILE",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                     "demo_admin_password.txt"),
+    )
+    try:
+        value = open(path, encoding="utf-8").read().strip()
+        if value:
+            return value[:128]
+    except (OSError, UnicodeError):
+        pass
+    return "admin123"
+
+
 DEMO_USERS = [
     {"username": "admin", "name": "系统管理员", "role": "admin",
-     "org": "平台运维", "password": "admin123"},
+     "org": "平台运维", "password": _demo_admin_password()},
     {"username": "wang", "name": "王社工", "role": "community",
      "org": "幸福里社区", "password": "123456"},
     {"username": "wuye", "name": "李经理", "role": "property",
@@ -468,6 +502,35 @@ def _migrate_user_table():
     db.session.commit()
 
 
+def _migrate_fde_table():
+    """Add the idempotency key used by confirmed screenshot imports."""
+    from sqlalchemy import inspect, text
+    insp = inspect(db.engine)
+    if "fde_record" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("fde_record")}
+    if "capture_draft_id" not in cols:
+        db.session.execute(text(
+            "ALTER TABLE fde_record ADD COLUMN capture_draft_id VARCHAR(32)"))
+    db.session.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_fde_capture_draft_id "
+        "ON fde_record(capture_draft_id) WHERE capture_draft_id IS NOT NULL"))
+    db.session.commit()
+
+
+def _migrate_capture_draft_table():
+    """Keep the original machine suggestion for review/audit after confirmation."""
+    from sqlalchemy import inspect, text
+    insp = inspect(db.engine)
+    if "capture_draft" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("capture_draft")}
+    if "suggested_json" not in cols:
+        db.session.execute(text(
+            "ALTER TABLE capture_draft ADD COLUMN suggested_json TEXT DEFAULT '[]'"))
+        db.session.commit()
+
+
 def enforce_account_status(app):
     """待审核 / 已停用账号的全局拦截
 
@@ -550,8 +613,19 @@ def _migrate_ticket_table():
     if "resident_ticket" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("resident_ticket")}
-    if "attachments" not in cols:
-        db.session.execute(text("ALTER TABLE resident_ticket ADD COLUMN attachments TEXT DEFAULT ''"))
+    additions = (
+        ("attachments", "TEXT DEFAULT ''"),
+        ("normalized_text", "TEXT DEFAULT ''"),
+        ("content_hash", "VARCHAR(64) DEFAULT ''"),
+        ("quality_status", "VARCHAR(16) DEFAULT 'clean'"),
+        ("quality_flags", "TEXT DEFAULT ''"),
+        ("duplicate_of", "INTEGER"),
+        ("duplicate_kind", "VARCHAR(16) DEFAULT ''"),
+        ("duplicate_score", "FLOAT"),
+    )
+    for col, ddl in additions:
+        if col not in cols:
+            db.session.execute(text(f"ALTER TABLE resident_ticket ADD COLUMN {col} {ddl}"))
     db.session.commit()
 
 
@@ -609,7 +683,7 @@ def _migrate_report_table():
 
 
 def _migrate_audit_table():
-    """审计日志补两个索引：游标分页 + 查询码锁定计数
+    """审计日志补索引，并在 SQLite 上建立只追加触发器。
 
     审计改成游标分页后，每一页都是"按时间倒序取 limit 条"。
     没有索引时要全表排序后再丢前面的行，翻到深处越来越慢；
@@ -632,11 +706,20 @@ def _migrate_audit_table():
         db.session.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_audit_actor_action_time "
             "ON audit_log(actor, action, created_at)"))
+        if db.engine.dialect.name == "sqlite":
+            db.session.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_update "
+                "BEFORE UPDATE ON audit_log BEGIN "
+                "SELECT RAISE(ABORT, 'audit_log is append-only'); END"))
+            db.session.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete "
+                "BEFORE DELETE ON audit_log BEGIN "
+                "SELECT RAISE(ABORT, 'audit_log is append-only'); END"))
         db.session.commit()
     except Exception as e:                                  # noqa: BLE001
         db.session.rollback()
         import logging
-        logging.getLogger(__name__).warning("audit_log 索引未建立：%s", e)
+        logging.getLogger(__name__).warning("audit_log 索引/只追加约束未建立：%s", e)
 
 
 def _migrate_notice_table():
@@ -757,14 +840,38 @@ def _backfill_ledger_search_text():
 
 
 def seed_users():
-    """幂等写入演示账号：已存在则跳过，不覆盖用户改过的密码"""
+    """幂等写入演示账号：已存在则跳过，不覆盖用户改过的密码。
+
+    管理员在系统页执行过“清空业务数据”后，重启不能把 wang/wuye 等
+    演示账号重新种回来；管理员仍保留，后续账号由管理员手工创建。
+    """
+    demo = DEMO_USERS
+    if AuditLog.query.filter_by(action="data_clear").first() is not None:
+        demo = DEMO_USERS[:1]
     created = []
-    for d in DEMO_USERS:
-        if User.query.filter_by(username=d["username"]).first():
+    for d in demo:
+        existing = User.query.filter_by(username=d["username"]).first()
+        if existing:
+            # 演示负责人需要覆盖完整居委会闭环。只在从未自定义权限、且身份
+            # 仍是系统初始化的幸福里社区账号时补齐，避免覆盖管理员后来调过的权限。
+            if (d["username"] == "wang" and existing.role == "community"
+                    and existing.org == "幸福里社区" and existing.perms_json is None
+                    and (existing.created_by or "系统初始化") == "系统初始化"):
+                import json
+                demo_perms = COMMUNITY_LEAD_PERMS | COMMUNITY_KB_PERMS
+                existing.perms_json = json.dumps(sorted(demo_perms), ensure_ascii=False)
+                db.session.commit()
             continue
+        perms_json = None
+        if d["username"] == "wang":
+            import json
+            perms_json = json.dumps(
+                sorted(COMMUNITY_LEAD_PERMS | COMMUNITY_KB_PERMS),
+                ensure_ascii=False,
+            )
         db.session.add(User(
             username=d["username"], name=d["name"], role=d["role"], org=d["org"],
-            status="active", perms_json=None, created_by="系统初始化",
+            status="active", perms_json=perms_json, created_by="系统初始化",
             password_hash=generate_password_hash(d["password"]),
         ))
         created.append(d["username"])
@@ -779,6 +886,8 @@ def seed_tasks():
     """
     from datetime import timedelta
     from app.models import Task
+    if AuditLog.query.filter_by(action="data_clear").first() is not None:
+        return 0
     if Task.query.count() > 0:
         return 0
     now = datetime.now()
@@ -833,6 +942,8 @@ def init_auth(app):
     with app.app_context():
         db.create_all()
         _migrate_user_table()
+        _migrate_fde_table()
+        _migrate_capture_draft_table()
         _migrate_order_table()
         _migrate_ticket_table()
         _migrate_task_table()

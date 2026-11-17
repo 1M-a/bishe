@@ -22,6 +22,35 @@
   <div><div class="num" id="cCalls">-</div><div class="lbl">累计模型调用</div></div>
 </div>
 
+<!-- 数据清理：管理员专属。按钮下方直接列出可回溯快照。 -->
+<div class="card col-12" style="border-color:#f0c4c0">
+  <div class="card-h">
+    <h2>🧹 清理演示数据</h2>
+    <span class="hint">清空前自动备份，保留管理员、知识库和公开联系人</span>
+  </div>
+  <div class="card-b">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button class="btn btn-ghost" id="btnClearData"
+              style="color:#b03131;border-color:#e6aaa5"
+              onclick="clearData()">清空业务数据</button>
+      <span id="clearTip" style="font-size:12px;color:var(--muted)">
+        会删除业务记录、居民附件、截图来源文件和非管理员账号
+      </span>
+    </div>
+    <div class="tw" style="margin-top:14px">
+      <table>
+        <thead><tr>
+          <th>备份文件</th><th>生成时间</th><th>大小</th>
+          <th>数据库记录</th><th>操作</th>
+        </tr></thead>
+        <tbody id="backupBody">
+          <tr><td colspan="5" style="text-align:center;color:var(--muted)">读取备份列表…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- 通道详情 -->
 <div class="card col-7">
   <div class="card-h"><h2>🔌 推理通道</h2><span class="hint" id="hint">读取中…</span></div>
@@ -196,7 +225,98 @@ async function runTest(){
   } finally { btn.disabled = false; btn.textContent = '▶ 跑一次'; }
 }
 
+function formatBytes(n){
+  n = Number(n || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function renderBackups(items){
+  const body = document.getElementById('backupBody');
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted)">暂无备份</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(function (x) {
+    const count = Object.entries(x.tables || {})
+      .filter(([k]) => !['user','org_contact','kb_doc'].includes(k))
+      .reduce((sum, [,v]) => sum + Number(v || 0), 0);
+    return `<tr>
+      <td style="font-family:Consolas,monospace;font-size:12px">
+        <a href="${esc(x.download_url)}">${esc(x.name)}</a>
+      </td>
+      <td>${esc(x.created_at || '—')}</td>
+      <td>${formatBytes(x.size)}</td>
+      <td>${count} 条 · 附件 ${Number(x.evidence_count || 0)} 个</td>
+      <td><button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
+          data-backup-name="${esc(x.name)}">删除</button></td>
+    </tr>`;
+  }).join('');
+  body.querySelectorAll('[data-backup-name]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      deleteBackup(button.dataset.backupName);
+    });
+  });
+}
+
+async function loadBackups(){
+  const body = document.getElementById('backupBody');
+  try {
+    const j = await api('/api/admin/data-backups');
+    if (j.code !== 0) throw new Error(j.msg || '读取失败');
+    renderBackups((j.data && j.data.items) || []);
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#b03131">
+      ${esc(e.message || '备份列表读取失败')}</td></tr>`;
+  }
+}
+
+async function deleteBackup(name){
+  if (!confirm('删除这份备份后将无法从页面下载，确定删除吗？')) return;
+  try {
+    const j = await api('/api/admin/data-backups/' + encodeURIComponent(name), {method:'DELETE'});
+    if (j.code !== 0) throw new Error(j.msg || '删除失败');
+    loadBackups();
+  } catch (e) {
+    alert(e.message || '删除失败');
+  }
+}
+
+async function clearData(){
+  const btn = document.getElementById('btnClearData');
+  const tip = document.getElementById('clearTip');
+  if (!confirm('将先备份，再删除业务记录、附件、截图来源文件和非管理员账号。确定继续吗？')) return;
+  const word = prompt('请输入“清空业务数据”确认操作：');
+  if (word !== '清空业务数据') {
+    tip.textContent = '未完成清空：确认词不匹配';
+    tip.style.color = '#b03131';
+    return;
+  }
+  btn.disabled = true;
+  tip.textContent = '正在备份并清空，请不要关闭页面…';
+  tip.style.color = 'var(--muted)';
+  try {
+    const j = await api('/api/admin/data-clear', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({confirm:'清空业务数据'})
+    });
+    if (j.code !== 0) throw new Error(j.msg || '清空失败');
+    const b = j.data.backup;
+    tip.textContent = '已完成，备份已生成：' + b.name;
+    tip.style.color = '#1e8e5a';
+    loadBackups();
+  } catch (e) {
+    tip.textContent = e.message || '清空失败，原数据未被清除';
+    tip.style.color = '#b03131';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 load();
 setInterval(load, 15000);
+loadBackups();
 </script>
 {% endblock %}

@@ -1,14 +1,16 @@
 {% extends "base.html" %}
-{% block title %}通知公告 · 极简减负平台{% endblock %}
-{% block page_title %}通知公告{% endblock %}
-{% block page_sub %}
-{% if can('notice.import') %}在线发文或把文件放进 data/notices/ → 自动解析编排 → 投递给社区
-{% elif can('notice.receive') %}上级来文先签收，再生成社区落地件发给居民
-{% elif can('notice.manage') %}确认发布 / 下架；居民端同步可见
-{% else %}只读；公告由社区发布，居民端同步展示{% endif %}
-{% endblock %}
+{% block title %}收发文 · 极简减负平台{% endblock %}
+{% block page_title %}收发文{% endblock %}
+{% block page_sub %}来文签收、居民公告与正式发文{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+  <a class="btn {{ 'btn-primary' if cur_recv == 'dispatched' else 'btn-ghost' }}"
+     href="{{ url_for('views.notices', recv='dispatched') }}">上级来文</a>
+  <a class="btn {{ 'btn-ghost' if cur_recv == 'dispatched' else 'btn-primary' }}"
+     href="{{ url_for('views.notices') }}">居民公告</a>
+  {% if can('doc.view') %}<a class="btn btn-ghost" href="{{ url_for('views.docs') }}">正式发文</a>{% endif %}
+</div>
 {# 四个统计卡都做成链接：看到"待签收 1"却不知道点哪儿能筛出来，是很典型的断点 #}
 <a class="card stat stat-link col-3" href="{{ url_for('views.notices', status='published') }}">
   <div class="ic" style="background:#e0f5ea">📢</div>
@@ -31,7 +33,7 @@
 <div class="card col-12" id="todoCard" style="display:none">
   <div class="card-h">
     <h2>📥 收文待办</h2>
-    <span class="hint">上级投递的文件，签收后即可生成社区落地件</span>
+    <span class="hint">签收后进入办理</span>
   </div>
   <div class="card-b" id="todoList" style="padding-top:6px"></div>
 </div>
@@ -41,7 +43,7 @@
 <div class="card col-12">
   <div class="card-h">
     <h2>✉️ 在线发文</h2>
-    <span class="hint">点对点投递给社区，对方工作台会出现待办；投递人、时限全程留痕</span>
+    <span class="hint">投递给指定社区</span>
     <button class="btn btn-ghost" style="margin-left:auto" id="btnToggleD">展开填写</button>
   </div>
   <div class="card-b" id="dispatchForm" style="display:none">
@@ -60,7 +62,7 @@
         <input class="inp" id="dDeadline" type="date"></div>
     </div>
     <div class="field"><label>正文 <span style="color:#c0392b">*</span>
-      <span style="color:var(--muted);font-weight:400">支持 Markdown，「一、」「1.」「- 」会被识别为层级</span></label>
+      </label>
       <textarea class="inp" id="dBody" rows="10" style="font-family:inherit;line-height:1.8"
         placeholder="各社区、各有关单位：&#10;&#10;现将有关事项通知如下：&#10;&#10;一、工作范围&#10;……"></textarea>
     </div>
@@ -73,7 +75,7 @@
 <div class="card col-12">
   <div class="card-h">
     <h2>📂 上级文件导入</h2>
-    <span class="hint">支持 .md（带元信息头）/ .docx / .txt，同一文件重复导入会自动去重</span>
+    <span class="hint">支持常用文档格式，重复文件自动去重</span>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
       <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px">
         <input type="checkbox" id="autoPub" checked> 字段完整时自动发布
@@ -88,7 +90,7 @@
 <div class="card col-12">
   <div class="card-h">
     <h2>📋 公告列表</h2>
-    <span class="hint">点标题查看详情；筛选条件会记进网址，从详情返回时还在</span>
+    <span class="hint">点标题查看详情</span>
     {# 首屏就把高亮算对：等服务端渲染完再由 JS 补 class，会有一瞬间"全都不是选中"的闪烁 #}
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn {{ 'btn-primary' if not cur_status and not cur_recv else 'btn-ghost' }}"
@@ -132,23 +134,6 @@
   </div>
 </div>
 
-<div class="card col-12">
-  <div class="card-h"><h2>ℹ️ 自动编排规则</h2></div>
-  <div class="card-b" style="font-size:13px;line-height:1.9;color:var(--muted)">
-    <p style="margin:0 0 8px">文件放进 <code>data/notices/</code> 后，系统按公文排布依次识别：<b>标题 → 发文机关 → 发文字号 → 正文 → 落款 → 成文日期</b>，并自动完成版面编排。</p>
-    <p style="margin:0 0 8px"><b>标题和发文单位缺一不可</b>。任一缺失则转入「待确认」，不会自动发布——政务信息发出去是要担责的，宁可多点一下，也不能把"关于××的通知"错认成发文单位。</p>
-    <p style="margin:0"><b>Markdown 带元信息头</b>最稳，可精确指定每个字段：</p>
-    <pre style="background:#f7f9fc;border-radius:8px;padding:12px;font-size:12px;overflow:auto;margin:8px 0 0">---
-title: 关于开展高层住宅消防安全专项排查的通知
-issuer: 幸福里街道办事处
-doc_no: 幸街发〔2026〕18号
-issued_at: 2026-10-15
-category: 通知公告
-pinned: true
----
-正文…</pre>
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}

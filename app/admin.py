@@ -12,9 +12,10 @@ from flask import (Blueprint, flash, redirect, render_template, request,
                    url_for, session)
 from werkzeug.security import generate_password_hash
 
-from app.auth import (PERM_GROUPS, PERMS, ROLE_NAMES, ROLE_PERMS, current_user,
-                      login_required, perm_required, role_name, status_name,
-                      user_perms, valid_username)
+from app.auth import (COMMUNITY_PERMISSION_PROFILES, PERM_GROUPS, PERMS,
+                      ROLE_NAMES, ROLE_PERMS, current_user, login_required,
+                      perm_required, role_name, status_name, user_perms,
+                      valid_username)
 from app.extensions import db
 from app.models import AuditLog, User
 from app.params import safe_back
@@ -188,6 +189,10 @@ def user_detail(uid: int):
         role_names=ROLE_NAMES, effective=sorted(shown),
         follow_role=follow_role, custom=custom,
         status_name=status_name,
+        community_profiles={
+            key: {"name": value["name"], "perms": sorted(value["perms"])}
+            for key, value in COMMUNITY_PERMISSION_PROFILES.items()
+        },
         # 列表页是按 status 筛的（?status=pending），返回时不带上就把筛选丢了
         back=safe_back("/admin/users"),
     )

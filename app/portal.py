@@ -18,20 +18,20 @@ from app.portal_seed import grouped_contacts
 bp = Blueprint("portalviews", __name__)
 
 
+def _recent_ticket():
+    for tid in session.get("portal_tickets", []):
+        ticket = db.session.get(ResidentTicket, tid)
+        if ticket:
+            from app.api.portal import _ticket_payload
+            return ticket, _ticket_payload(ticket)
+    return None, None
+
+
 @bp.get("/portal")
 def home():
-    # 一律走 visible_query("resident")：只给「已发布 且 scope=all」的公告。
-    # 居民端是公开入口，绝不能只按 status 过滤——否则一条 scope=community 的
-    # 内部通知只要被发布了，居民在首页就能看到（越权读取，见 docs/04）。
-    notices = (visible_query("resident")
-               .order_by(Notice.pinned.desc(), Notice.published_at.desc()).limit(3).all())
-    recent = []
-    for tid in session.get("portal_tickets", [])[:3]:
-        t = db.session.get(ResidentTicket, tid)
-        if t:
-            recent.append(t)
-    return render_template("portal/home.html", notices=notices, recent=recent,
-                           groups=grouped_contacts())
+    recent_ticket, recent_view = _recent_ticket()
+    return render_template("portal/home.html", recent_ticket=recent_ticket,
+                           recent_view=recent_view)
 
 
 @bp.get("/portal/report")
@@ -44,22 +44,15 @@ def done(tid: int):
     t = db.session.get(ResidentTicket, tid)
     if not t or tid not in session.get("portal_tickets", []):
         return redirect(url_for("portalviews.home"))
-    return render_template("portal/done.html", ticket=t)
-
-
-@bp.get("/portal/my")
-def my():
-    rows = []
-    for tid in session.get("portal_tickets", []):
-        t = db.session.get(ResidentTicket, tid)
-        if t:
-            rows.append(t)
-    return render_template("portal/my.html", tickets=rows)
+    from app.api.portal import _ticket_payload
+    return render_template("portal/done.html", ticket=t, view=_ticket_payload(t))
 
 
 @bp.get("/portal/query")
 def query():
-    return render_template("portal/query.html")
+    recent_ticket, recent_view = _recent_ticket()
+    return render_template("portal/query.html", recent_ticket=recent_ticket,
+                           recent_view=recent_view)
 
 
 @bp.get("/portal/ticket/<int:tid>")

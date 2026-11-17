@@ -14,11 +14,13 @@
 import os
 import sys
 import pathlib
+import io
+from datetime import datetime, timedelta
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-DB = BASE / "data" / "smoke_portal.db"
+DB = pathlib.Path(os.environ.get("SMOKE_PORTAL_DB", BASE / "data" / "smoke_portal.db"))
 if DB.exists():
     DB.unlink()
 
@@ -58,18 +60,29 @@ def main():
     ratelimit.reset()
 
     print("\n[1] 居民端可访问性")
-    for path in ["/portal", "/portal/report", "/portal/query", "/portal/my",
+    for path in ["/portal", "/portal/report", "/portal/query",
                  "/portal/notices", "/portal/contacts"]:
         r = c.get(path)
         check(f"GET {path} = 200", r.status_code == 200, r.status_code)
     r = c.get("/portal")
     html = r.get_data(as_text=True)
     check("首页含工作人员入口", "工作人员入口" in html)
+    check("居民导航不再显示我的", ">我的</a>" not in html)
+    check("匿名首页不显示他人诉求或查询码", "最近办理进度" not in html and "查询码" not in html)
+    check("已下线 /portal/my", c.get("/portal/my").status_code == 404)
+    check("已下线 /api/portal/my", c.get("/api/portal/my").status_code == 404)
     check("首页引用独立样式 portal.css", "portal.css" in html)
     check("首页不引用内部端 style.css", "css/style.css" not in html)
 
     r = c.get("/login")
     check("登录页含居民入口", "我是居民" in r.get_data(as_text=True))
+    report_html = c.get("/portal/report").get_data(as_text=True)
+    check("身份字段支持系统自动填充", 'autocomplete="tel"' in report_html and
+          'autocomplete="name"' in report_html and 'autocomplete="street-address"' in report_html)
+    check("意见支持截图上传与选图后本机识字", 'id="screenshots"' in report_html and
+          "TextDetector" in report_html and "recognize(files)" in report_html)
+    check("居民端不申请身份证或定位权限", "身份证" in report_html and
+          "geolocation" not in report_html and 'name="id_card"' not in report_html)
 
     print("\n[2] 公告自动导入（三种格式）")
     with app.app_context():
@@ -124,9 +137,10 @@ def main():
 
     print("\n[4] 居民填报 → 查询码 → 查进度")
     ratelimit.reset()
-    r = c.post("/api/portal/report", json={
+    r = c.post("/api/portal/report", data={
         "text": "2栋2单元202楼道灯坏了半个月，另外老人身份证要办高龄补贴，电话13800001111",
-        "phone": "13800001111", "name": "王阿姨", "address": "2栋2单元202"})
+        "phone": "13800001111", "name": "王阿姨", "address": "2栋2单元202",
+        "photos": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"test screenshot"), "chat.png")})
     j = r.get_json()
     check("提交成功", j["code"] == 0, j.get("msg"))
     d = j["data"]
@@ -135,6 +149,14 @@ def main():
     check("拆出 2 个业务项", d["item_count"] == 2, d["item_count"])
     check("生成 1 条工单", d["order_count"] == 1, d["order_count"])
     check("生成 1 条台账", d["ledger_count"] == 1, d["ledger_count"])
+    check("截图随诉求进入安全附件链", d["photos"] == 1, d.get("photos"))
+    duplicate = c.post("/api/portal/report", data={
+        "text": "2栋2单元202楼道灯坏了半个月，另外老人身份证要办高龄补贴，电话13800001111",
+        "phone": "13800001111",
+        "photos": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"second screenshot"), "chat2.png")})
+    duplicate_data = duplicate.get_json()["data"]
+    check("重复诉求复用原单并保留新截图",
+          duplicate_data["deduplicated"] and duplicate_data["photos"] == 1, duplicate_data)
 
     r = c.get(f"/api/portal/ticket?phone=13800001111&code={code}")
     j = r.get_json()
@@ -144,12 +166,17 @@ def main():
     check("事项带承办单位", all(it["orgs"] for it in v["items"]))
     check("不返回内部字段 fields_json", "fields_json" not in r.get_data(as_text=True))
 
-    r = c.get("/api/portal/my")
-    check("我的反映列表非空", r.get_json()["data"]["tickets"])
     tid = v["id"]
     r = c.get(f"/portal/done/{tid}")
     check("提交成功页 200", r.status_code == 200)
     check("成功页显示查询码", code in r.get_data(as_text=True))
+    check("提交后显示黄灯受理反馈", "p-traffic-yellow" in r.get_data(as_text=True))
+    home_html = c.get("/portal").get_data(as_text=True)
+    check("本机会话首页免查询码查看最近进度",
+          "最近办理进度" in home_html and f"/portal/ticket/{d['ticket_id']}" in home_html)
+    query_html = c.get("/portal/query").get_data(as_text=True)
+    check("查询页提供最近记录快捷入口", "最近办理进度" in query_html and "用查询码查其他记录" in query_html)
+    check("提交页说明查询码仅供换设备备用", "本机可从首页直接查看最近进度" in r.get_data(as_text=True))
 
     # 办理进度页必须真能渲染。早先模板写成 view.items，而 view 是 dict，
     # Jinja 会取到 dict 自带的 .items 方法 → for 循环一个内置方法 → 整页 500 JSON。
@@ -159,10 +186,31 @@ def main():
     check("办理进度页 200", r.status_code == 200, r.status_code)
     check("进度页渲染成 HTML 而非错误 JSON",
           "text/html" in r.headers.get("Content-Type", "") and "服务内部错误" not in html)
-    check("进度页显示标题与状态", "办理进度" in html and "已受理" in html)
-    check("进度页列出拆出的事项", "楼道灯" in html, html[:80])
-    check("进度页状态用状态徽标而非业务线配色",
-          "tag tag-open" in html and 'class="lv' not in html)
+    check("进度页显示简洁状态灯", "办理进度" in html and "p-traffic-yellow" in html)
+    check("进度页不暴露内部拆解明细", "楼道灯" not in html and "办理事项" not in html)
+
+    with app.app_context():
+        order = WorkOrder.query.filter(WorkOrder.work_item_id.in_(
+            db.session.query(portal_api.WorkItem.id).filter_by(fde_id=v.get("fde_id", -1))
+        )).first()
+        if order is None:
+            order = WorkOrder.query.first()
+        order.created_at = datetime.now() - timedelta(hours=25)
+        order.status = "open"
+        order.sla_hours = None
+        db.session.commit()
+        ticket_row = db.session.get(ResidentTicket, tid)
+        fallback_sla_payload = portal_api._ticket_payload(ticket_row)
+        order.created_at = datetime.now() - timedelta(hours=48)
+        order.sla_hours = 1
+        db.session.commit()
+        ticket_row = db.session.get(ResidentTicket, tid)
+        overdue_payload = portal_api._ticket_payload(ticket_row)
+    check("空 SLA 按督办口径 24 小时兜底并显示红灯",
+          fallback_sla_payload["traffic_light"] == "red",
+          fallback_sla_payload["traffic_light"])
+    check("超过 SLA 的诉求显示红灯", overdue_payload["traffic_light"] == "red",
+          overdue_payload["traffic_light"])
 
     # 换设备：没有本地会话时，凭手机号 + 查询码找回后要能进同一页
     c2 = app.test_client()

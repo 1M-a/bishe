@@ -25,7 +25,8 @@ os.environ["NOTICE_AUTO_IMPORT"] = "0"
 
 from app import create_app                                    # noqa: E402
 from app import auth as auth_mod                              # noqa: E402
-from app.auth import PERMS, ROLE_PERMS, user_perms              # noqa: E402
+from app.auth import (COMMUNITY_KB_PERMS, COMMUNITY_LEAD_PERMS, PERMS,
+                      ROLE_PERMS, user_perms)                    # noqa: E402
 
 # 权限点总数与社区默认项数不写死：以后加权限点不该让这套测试失败
 N_PERMS = len(PERMS)
@@ -295,12 +296,13 @@ def main():
     check("重置密码成功", r.status_code == 200 and r.get_json()["code"] == 0)
     check("重置写入审计", audit_has("user_reset_pwd"))
 
-    # ---------------------------------------------------------------- 9 老账号兼容
-    print("\n[9] 老账号兼容（perms_json 为 NULL 时跟随角色）")
+    # ---------------------------------------------------------------- 9 演示负责人岗位权限
+    print("\n[9] 演示负责人使用用户级岗位权限")
     uid_w, role_w, st_w, pj_w, n_w = fetch("wang")
-    check("老账号 perms_json 为 NULL", pj_w is None)
-    check(f"老账号仍跟随社区默认 {N_COMMUNITY} 项", n_w == N_COMMUNITY, n_w)
-    check("老账号状态为 active", st_w == "active", st_w)
+    expected = COMMUNITY_LEAD_PERMS | COMMUNITY_KB_PERMS
+    check("负责人账号使用自定义权限", pj_w is not None)
+    check(f"负责人具备完整闭环 {len(expected)} 项", n_w == len(expected), n_w)
+    check("负责人账号状态为 active", st_w == "active", st_w)
 
     print("\n" + "=" * 60)
     print(f"通过 {PASS} 项，失败 {FAIL} 项")

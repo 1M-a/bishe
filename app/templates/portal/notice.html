@@ -1,6 +1,5 @@
 {% extends "portal/base.html" %}
 {% block title %}{{ notice.title }} · 幸福里居民服务{% endblock %}
-{% block sub %}{{ notice.issuer }}{% endblock %}
 {% block head %}
 <style>
 .doc-head { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 14px; }
@@ -28,10 +27,10 @@
   <div class="doc-head">
     <h1>{{ notice.title }}</h1>
     <div class="doc-meta">
-      {% if notice.issuer %}<span>发文单位：{{ notice.issuer }}</span>{% endif %}
-      {% if notice.doc_no %}<span>文号：{{ notice.doc_no }}</span>{% endif %}
-      {% if notice.issued_at %}<span>成文日期：{{ notice.issued_at.strftime('%Y-%m-%d') }}</span>{% endif %}
-      {% if notice.published_at %}<span>发布：{{ notice.published_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+      {% if notice.issuer %}<span>{{ notice.issuer }}</span>{% endif %}
+      {% if notice.doc_no %}<span>{{ notice.doc_no }}</span>{% endif %}
+      {% if notice.issued_at %}<span>{{ notice.issued_at.strftime('%Y-%m-%d') }}</span>
+      {% elif notice.published_at %}<span>{{ notice.published_at.strftime('%Y-%m-%d') }}</span>{% endif %}
     </div>
   </div>
 
@@ -48,10 +47,6 @@
     <a class="p-btn-line primary" href="{{ url_for('portalviews.notice', nid=notice.id, mode='official') }}">发布版</a>
     <a class="p-btn-line" href="{{ url_for('portalviews.notice', nid=notice.id, mode='print') }}">打印版</a>
   </div>
-  <p class="p-muted" style="margin:10px 0 0">
-    发布版按公文版式排版（红头、文号、落款），适合对外张贴或上报；
-    打印版为普通 A4 版式，适合直接打印留存。
-  </p>
 </div>
 
 <a class="p-btn-line" href="{{ url_for('portalviews.notices') }}">← 返回公告列表</a>

@@ -88,6 +88,20 @@ def columns(conn, table, schema="main"):
     return [r[1] for r in conn.execute("pragma %s.table_info(%s)" % (schema, q(table)))]
 
 
+def protected_audit_triggers(conn):
+    """返回目标库审计只追加触发器的 (name, sql)。
+
+    快照覆盖是操作系统级显式维护动作，需要替换 audit_log；普通应用连接仍受触发器
+    保护。触发器只在同一覆盖事务内移除并原样恢复，失败时随事务一起回滚。
+    """
+    return conn.execute(
+        "select name, sql from main.sqlite_master "
+        "where type='trigger' and tbl_name='audit_log' "
+        "and name like 'trg_audit_log_no_%' and sql is not null "
+        "order by name"
+    ).fetchall()
+
+
 def counts(conn, schema="main"):
     out = {}
     for t in tables(conn, schema):
@@ -317,7 +331,10 @@ def apply_snapshot(incoming, live, restart_task=None, force=False, require_reque
                 os.path.join(os.path.dirname(os.path.abspath(incoming)),
                              "audit-orphan-%s.jsonl" % stamp))
 
+        audit_triggers = protected_audit_triggers(conn)
         conn.execute("begin immediate")
+        for name, _sql in audit_triggers:
+            conn.execute("drop trigger if exists main.%s" % q(name))
         for t in common:
             conn.execute("delete from main.%s" % q(t))
         for t in common:
@@ -329,6 +346,8 @@ def apply_snapshot(incoming, live, restart_task=None, force=False, require_reque
             collist = ",".join(q(c) for c in use)
             conn.execute("insert into main.%s (%s) select %s from src.%s"
                          % (q(t), collist, collist, q(t)))
+        for _name, trigger_sql in audit_triggers:
+            conn.execute(trigger_sql)
         conn.execute("commit")
     except Exception as e:
         try:

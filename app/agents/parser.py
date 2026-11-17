@@ -21,6 +21,25 @@ TYPES = ("报修", "人口变动", "走访", "调解", "咨询", "隐患排查",
 # 业务线枚举（去向）
 LINES = ("物业", "综治", "民政", "卫健", "街道")
 
+# 模型负责语义理解，但以下字段属于可由原文直接复核的“硬事实”。
+# 这些事实不能因为模型一次漏抽就从 field_security 与后续台账中消失。
+_FIELD_PATTERNS = {
+    "楼栋": re.compile(r"(?<!\d)(\d{1,3})\s*(?:栋|号楼)"),
+    "单元": re.compile(r"(?<!\d)(\d{1,2})\s*单元"),
+    "房号": re.compile(r"(?<!\d)(\d{3,4})\s*室"),
+    # SecurityAgent 已先遮蔽手机号；同时兼容直接单测 ParserAgent 的明文输入。
+    "电话": re.compile(r"(?<!\d)(1[3-9](?:\d{9}|\d\*{4}\d{4}))(?!\d)"),
+}
+_NAME_PATTERN = re.compile(
+    r"(?:租户|居民|住户|户主|联系人|老人)\s*"
+    r"([\u4e00-\u9fff]{1,3}(?:某|先生|女士|奶奶|爷爷|大爷|阿姨)?)"
+)
+_QUESTION_HINTS = (
+    "来问", "咨询", "怎么申请", "如何申请", "怎么办理", "如何办理",
+    "要准备哪些材料", "需要哪些材料", "办理流程", "申请条件", "能不能办",
+    "是否可以申请", "去哪办理",
+)
+
 SYSTEM = """你是社区业务拆解助手，负责把社区工作者的一段口语化记录，拆成可流转的结构化业务项。
 
 【输出格式】只输出一个 JSON 数组，不要任何解释文字、不要 markdown 代码块。数组每项包含 4 个字段：
@@ -137,10 +156,72 @@ class ParserAgent(BaseAgent):
         except (LLMUnavailable, ValueError, json.JSONDecodeError, TypeError):
             items = self._fallback(text)
             source = "fallback"
-        result = {"items": items, "source": source}
+        items, corrections = self._postprocess(text, items)
+        result = {"items": items, "source": source, "corrections": corrections}
         if self.audit:
             self._audit("parse", text, json.dumps(items, ensure_ascii=False))
         return result
+
+    @classmethod
+    def _postprocess(cls, text: str, items: list[dict]) -> tuple[list[dict], list[str]]:
+        """对模型输出做可复核的业务规则校正。
+
+        只修两类“原文有明确证据”的问题：显式咨询意图与强格式字段。
+        不在这里猜业务事项、也不新增模型没有拆出的模糊事件，避免规则层反客为主。
+        """
+        corrections = []
+
+        # “居民来问……怎么申请”不能因提到老人就被模型判成走访。
+        if any(h in text for h in _QUESTION_HINTS) and not any(
+                it.get("type") == "咨询" for it in items):
+            policy_words = ("政策", "补贴", "津贴", "申请", "材料", "办理", "条件", "流程")
+            candidates = [it for it in items
+                          if any(w in (it.get("subject") or "") for w in policy_words)]
+            target = candidates[0] if candidates else (items[0] if len(items) == 1 else None)
+            if target is not None and target.get("type") in ("走访", "其他"):
+                old = target.get("type")
+                target["type"] = "咨询"
+                if any(k in text for k in ("高龄", "老人", "津贴", "低保", "残疾", "救助")):
+                    target["target_lines"] = ["民政"]
+                elif any(k in text for k in ("健康", "体检", "慢病", "医疗")):
+                    target["target_lines"] = ["卫健"]
+                else:
+                    target["target_lines"] = ["综治"]
+                corrections.append(f"显式咨询意图：{old}→咨询")
+
+        extracted = cls._extract_fields(text)
+        if extracted and items:
+            # 楼栋/单元/房号仅在全文只有唯一值时才提取，因此可安全作为本次事项的
+            # 共同定位信息；姓名和电话只挂到最接近居民主体的第一项，避免跨事项扩散。
+            loc = {k: v for k, v in extracted.items() if k in ("楼栋", "单元", "房号")}
+            for it in items:
+                fields = it.setdefault("fields", {})
+                for k, v in loc.items():
+                    fields.setdefault(k, v)
+            identity_target = next(
+                (it for it in items if it.get("type") in ("人口变动", "走访", "咨询")),
+                items[0],
+            )
+            for k in ("姓名", "电话"):
+                if k in extracted:
+                    identity_target.setdefault("fields", {}).setdefault(k, extracted[k])
+            corrections.append("强格式字段补全：" + "、".join(extracted))
+
+        return items, corrections
+
+    @staticmethod
+    def _extract_fields(text: str) -> dict:
+        """从脱敏后的原文提取唯一、可直接复核的字段。"""
+        out = {}
+        suffix = {"楼栋": "栋", "单元": "单元", "房号": "室"}
+        for field, pat in _FIELD_PATTERNS.items():
+            vals = list(dict.fromkeys(pat.findall(text or "")))
+            if len(vals) == 1:
+                out[field] = vals[0] + suffix.get(field, "")
+        names = list(dict.fromkeys(_NAME_PATTERN.findall(text or "")))
+        if len(names) == 1:
+            out["姓名"] = names[0]
+        return out
 
     @staticmethod
     def _split_clauses(text: str) -> list:
@@ -225,12 +306,19 @@ class ParserAgent(BaseAgent):
         if any(k in text for k in ("租户", "入住", "搬", "登记", "人口")):
             items.append({"type": "人口变动", "subject": text[:30],
                           "fields": {}, "target_lines": ["综治"]})
-        if any(k in text for k in ("走访", "老人", "探视", "慰问")):
+        explicit_question = any(k in text for k in _QUESTION_HINTS)
+        if (not explicit_question
+                and any(k in text for k in ("走访", "老人", "探视", "慰问"))):
             items.append({"type": "走访", "subject": text[:30],
                           "fields": {}, "target_lines": ["民政"]})
         if any(k in text for k in ("纠纷", "调解", "噪音", "矛盾")):
             items.append({"type": "调解", "subject": text[:30],
                           "fields": {}, "target_lines": ["综治"]})
+        if explicit_question:
+            items.append({"type": "咨询", "subject": text[:30],
+                          "fields": {}, "target_lines": ["民政" if any(
+                              k in text for k in ("高龄", "老人", "津贴", "低保", "残疾", "救助"))
+                              else "综治"]})
         if not items:
             items.append({"type": "其他", "subject": text[:30],
                           "fields": {}, "target_lines": ["综治"]})

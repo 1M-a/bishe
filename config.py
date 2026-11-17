@@ -80,6 +80,8 @@ class Config:
     # 不放 app/static/ ——放那里等于把居民照片变成可直接访问的静态资源。
     EVIDENCE_DIR = os.environ.get(
         "EVIDENCE_DIR", os.path.join(BASE_DIR, "data", "evidence"))
+    # 截图识别只允许走本机模型；确需跨机器调用私有模型时显式 opt in。
+    CAPTURE_ALLOW_REMOTE_LLM = os.environ.get("CAPTURE_ALLOW_REMOTE_LLM", "0") == "1"
 
     # 开发与演示默认 SQLite（随项目走，零配置，无需任何数据库进程）；
     # 生产切 MySQL 时，把 DATABASE_URL 设为 SQLAlchemy 的 MySQL URI 并另装驱动。

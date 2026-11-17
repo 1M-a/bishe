@@ -75,6 +75,12 @@ def tasks():
     return render_template("tasks.html")
 
 
+@bp.get("/meetings")
+@perm_required("meeting.view")
+def meetings():
+    return render_template("meetings.html")
+
+
 @bp.get("/orders")
 @perm_required("order.view")
 def orders():
@@ -113,6 +119,13 @@ def trace_page():
     接口侧再加一层角色硬判（见 `api/collab.py`）。
     """
     return render_template("trace.html")
+
+
+@bp.get("/feedback")
+@perm_required("feedback.view")
+def feedback_page():
+    """居委模型纠错台：人工确认样本，累计形成可复用规则。"""
+    return render_template("feedback.html")
 
 
 @bp.get("/persons")
@@ -212,6 +225,8 @@ def health():
 def system():
     # 模型通道自检页：只给 admin。它暴露部署形态（通道地址、模型、延迟），
     # 属于系统运维信息，不是业务信息，不该让普通社区账号看到。
+    if current_user().role != "admin":
+        return render_template("403.html", perm="系统管理员权限"), 403
     return render_template("system.html")
 
 

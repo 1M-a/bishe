@@ -47,7 +47,7 @@ os.environ["EVIDENCE_DIR"] = str(EV_DIR)
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
 
 from app import create_app  # noqa: E402
-from app.auth import generate_password_hash  # noqa: E402
+from app.auth import COMMUNITY_LEAD_PERMS, generate_password_hash  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models import (AuditLog, ChainAnchor, EvidenceChain, ResidentTicket,  # noqa: E402
                         User, WorkItem, WorkOrder, WorkOrderLog)
@@ -94,7 +94,8 @@ with app.app_context():
     EvidenceChain.query.delete()
     ChainAnchor.query.delete()
     db.session.commit()
-    ensure_user("t_arb_comm", "community", "幸福里社区", "arb123")
+    ensure_user("t_arb_comm", "community", "幸福里社区", "arb123",
+                sorted(COMMUNITY_LEAD_PERMS))
     ensure_user("t_arb_prop", "property", "幸福里物业", "arb123")
     ensure_user("t_arb_street", "street", "幸福里街道办事处", "arb123")
 

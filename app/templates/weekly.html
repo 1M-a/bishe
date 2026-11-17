@@ -1,15 +1,17 @@
 {% extends "base.html" %}
-{% block title %}工作周报 · 极简减负平台{% endblock %}
-{% block page_title %}工作周报{% endblock %}
-{% block page_sub %}
-按自然周（周一至周日）取数；数字由服务端统计，明细可逐条核对；签发后冻结，改动出新版本
-{% endblock %}
+{% block title %}材料报送 · 周报{% endblock %}
+{% block page_title %}材料报送{% endblock %}
+{% block page_sub %}周报与月报统一管理{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px">
+  <a class="btn btn-primary" href="{{ url_for('views.weekly') }}">周报</a>
+  {% if can('report.view') %}<a class="btn btn-ghost" href="{{ url_for('views.reports') }}">月报</a>{% endif %}
+</div>
 <div class="card col-12">
   <div class="card-h" style="flex-wrap:wrap;gap:8px">
     <h2>📅 周期</h2>
-    <span class="hint">数字来自收文、工单、台账、任务、居民诉求，同一次查询产生</span>
+    <span class="hint">按自然周汇总</span>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input class="inp" id="period" type="week" style="width:180px">
       <button class="btn btn-ghost" id="btnLoad">查询</button>
@@ -35,7 +37,7 @@
 </div>
 
 <div class="card col-12">
-  <div class="card-h"><h2>近期周报</h2><span class="hint">按周倒序，最多 12 周</span></div>
+  <div class="card-h"><h2>近期周报</h2></div>
   <div class="card-b" id="history" style="display:flex;gap:8px;flex-wrap:wrap"></div>
 </div>
 {% endblock %}

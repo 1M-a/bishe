@@ -1,91 +1,129 @@
 {% extends "portal/base.html" %}
 {% block title %}反映问题 · 幸福里居民服务{% endblock %}
-{% block sub %}说清楚"在哪、什么事、多久了"就够了{% endblock %}
 {% block body %}
-
 <div class="p-card">
-  <h2><span class="bar"></span>反映问题</h2>
+  <h2><span class="bar"></span>说说遇到的事</h2>
   <form id="f" autocomplete="on">
     <div class="p-field">
-      <label for="text">要反映的情况 <span class="hint">必填，至少 5 个字</span></label>
-      <textarea id="text" name="text" placeholder="例：3 栋 2 单元 501 楼道灯坏了半个月，晚上出门看不见路，麻烦安排修一下。"></textarea>
+      <label for="text">情况</label>
+      <textarea id="text" name="text" maxlength="2000" placeholder="说清楚发生了什么、在哪里。也可用手机键盘语音输入。" required></textarea>
     </div>
 
     <div class="p-field">
-      <label for="phone">手机号 <span class="hint">必填，用于接收办理结果</span></label>
-      <input id="phone" name="phone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      <label for="screenshots">截图或照片 <span class="hint">选填，最多 5 张</span></label>
+      <input id="screenshots" name="photos" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple>
+      <div id="imageList" class="p-file-list" aria-live="polite"></div>
+      <div id="ocrStatus" class="p-muted" aria-live="polite"></div>
     </div>
 
     <div class="p-field">
-      <label for="name">称呼 <span class="hint">选填，方便工作人员称呼您</span></label>
-      <input id="name" name="name" maxlength="16" placeholder="如：王阿姨">
+      <label for="phone">手机号</label>
+      <input id="phone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" placeholder="用于查询办理进度" required>
     </div>
 
-    <div class="p-field">
-      <label for="address">地址 <span class="hint">选填，涉及具体位置时更好找</span></label>
-      <input id="address" name="address" maxlength="64" placeholder="如：3 栋 2 单元 501">
-    </div>
+    <details class="p-more">
+      <summary>补充称呼和位置</summary>
+      <div class="p-field">
+        <label for="name">怎么称呼您</label>
+        <input id="name" name="name" autocomplete="name" maxlength="16" placeholder="选填">
+      </div>
+      <div class="p-field">
+        <label for="address">所在楼栋或位置</label>
+        <input id="address" name="address" autocomplete="street-address" maxlength="64" placeholder="选填">
+      </div>
+    </details>
 
-    <div class="p-err" id="err"></div>
+    <p class="p-muted p-privacy">仅收集联系和办理所需信息，不读取聊天记录或身份证信息。</p>
+    <div class="p-err" id="err" role="alert"></div>
     <button class="p-btn" id="submit" type="submit">提交</button>
   </form>
 </div>
-
-<div class="p-card">
-  <h2><span class="bar"></span>提交后会怎样</h2>
-  <div class="p-timeline">
-    <div class="p-tl on"><div class="t">系统自动分流</div><div class="s">一句话会被拆成若干条事项，分别交给物业、社区民政、综治等对口单位</div></div>
-    <div class="p-tl on"><div class="t">给一个查询码</div><div class="s">6 位数字，凭手机号 + 查询码可随时查进度，不用注册账号</div></div>
-    <div class="p-tl on"><div class="t">按承诺时限办理</div><div class="s">紧急事项 4 小时、较急 24 小时、一般 72 小时内响应</div></div>
-  </div>
-  <p class="p-muted" style="margin-top:12px">
-    涉及身份证号、住址门牌等敏感信息时，系统会自动打码后再流转到承办单位，
-    工作人员看到的是「138****1111」这样的脱敏内容。
-  </p>
-</div>
-
 {% endblock %}
 {% block script %}
 <script>
 (function () {
-  var f = document.getElementById('f');
-  var btn = document.getElementById('submit');
+  var form = document.getElementById('f');
+  var input = document.getElementById('screenshots');
+  var list = document.getElementById('imageList');
+  var ocrStatus = document.getElementById('ocrStatus');
+  var submit = document.getElementById('submit');
   var err = document.getElementById('err');
+  var detector = typeof window.TextDetector === 'function' ? new window.TextDetector() : null;
 
-  f.addEventListener('submit', function (e) {
+  async function recognize(files) {
+    if (!detector || !files.length) return;
+    ocrStatus.textContent = '正在识别截图文字…';
+    try {
+      var lines = [];
+      for (var i = 0; i < files.length; i++) {
+        var bitmap = await createImageBitmap(files[i]);
+        try {
+          var blocks = await detector.detect(bitmap);
+          blocks.forEach(function (block) {
+            if (block.rawValue) lines.push(block.rawValue);
+          });
+        } finally {
+          bitmap.close();
+        }
+      }
+      if (!lines.length) throw new Error('no text found');
+      var area = document.getElementById('text');
+      area.value = (area.value.trim() ? area.value.trim() + '\n' : '') + lines.join('\n');
+      ocrStatus.textContent = '已识别，请核对文字后提交。';
+    } catch (e) {
+      ocrStatus.textContent = '未能自动识别；请填写文字说明后提交。';
+    }
+  }
+
+  input.addEventListener('change', async function () {
+    list.textContent = '';
+    var files = Array.prototype.slice.call(input.files || []);
+    files.forEach(function (file) {
+      var row = document.createElement('div');
+      row.className = 'p-file-item';
+      row.textContent = file.name + ' · ' + Math.ceil(file.size / 1024) + ' KB';
+      list.appendChild(row);
+    });
+    ocrStatus.textContent = files.length
+      ? (detector ? '正在尝试识别截图文字…' : '截图会作为附件保存，请同时填写文字说明。')
+      : '';
+    await recognize(files);
+  });
+
+  form.addEventListener('submit', async function (e) {
     e.preventDefault();
     err.textContent = '';
     var text = document.getElementById('text').value.trim();
     var phone = document.getElementById('phone').value.trim();
-
-    if (phone.length !== 11 || !/^1[3-9]\d{9}$/.test(phone)) {
+    var files = Array.prototype.slice.call(input.files || []);
+    if (!/^1[3-9]\d{9}$/.test(phone)) {
       err.textContent = '请填写正确的 11 位手机号'; return;
     }
     if (text.length < 5) {
-      err.textContent = '请把情况说清楚一些（至少 5 个字）'; return;
+      err.textContent = '请再补充一些情况（至少 5 个字）'; return;
+    }
+    if (files.length > 5 || files.some(function (f) { return f.size > 5 * 1024 * 1024; })) {
+      err.textContent = '最多上传 5 张图片，单张不超过 5MB'; return;
     }
 
-    btn.disabled = true;
-    btn.textContent = '正在提交…';
-    fetch('/api/portal/report', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: text, phone: phone,
-        name: document.getElementById('name').value.trim(),
-        address: document.getElementById('address').value.trim()
-      })
-    }).then(function (r) { return r.json(); }).then(function (j) {
+    submit.disabled = true;
+    submit.textContent = '正在提交…';
+    var data = new FormData(form);
+    try {
+      var j = await api('/api/portal/report', {method: 'POST', body: data});
       if (j.code === 0 && j.data) {
-        location.href = '/portal/done/' + j.data.ticket_id;
-      } else {
-        err.textContent = j.msg || '提交失败，请稍后重试';
-        btn.disabled = false; btn.textContent = '提交';
+        if (j.data.photo_errors && j.data.photo_errors.length) {
+          alert('文字已提交，但有图片未保存：' + j.data.photo_errors.join('；'));
+        }
+        location.href = '/portal/done/' + j.data.ticket_id + (j.data.deduplicated ? '?merged=1' : '');
+        return;
       }
-    }).catch(function () {
-      err.textContent = '网络异常，请检查网络后重试';
-      btn.disabled = false; btn.textContent = '提交';
-    });
+      err.textContent = j.msg || '提交失败，请稍后重试';
+    } catch (e) {
+      err.textContent = e.message || '网络异常，请检查网络后重试';
+    }
+    submit.disabled = false;
+    submit.textContent = '提交';
   });
 })();
 </script>

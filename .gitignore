@@ -34,6 +34,11 @@ data/_evidence_smoke/
 data/_synctest/
 data/_case_out/
 data/_cases*.json
+data/reset_integration_tmp*/
+data/smoke-data-reset-*/
+
+# ---- 改密脚本生成的新口令：绝不能提交 ----
+data/_new_password.txt
 
 # ---- 证据附件：居民上传的实物照片，属个人敏感信息，绝不入库 ----
 data/evidence/

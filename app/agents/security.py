@@ -15,6 +15,33 @@ PATTERNS = {
               lambda m: m[:3] + "****" + m[-4:]),
 }
 
+
+def detect_sensitive(text: str) -> list[dict]:
+    """返回强特征敏感值的脱敏摘要，不返回明文。"""
+    findings = []
+    for fname, (pat, level, mask_fn) in PATTERNS.items():
+        for m in pat.finditer(text or ""):
+            value = m.group(0)
+            findings.append({"type": fname, "field": fname,
+                             "value_masked": mask_fn(value), "level": level})
+    return findings
+
+
+_PUBLIC_DETAIL_PATTERNS = (
+    ("精确门牌", re.compile(r"\d{1,3}\s*(?:栋|号楼).{0,16}\d{1,2}\s*单元.{0,12}\d{3,4}\s*室")),
+    ("精确门牌", re.compile(r"\d{1,2}\s*单元.{0,12}\d{3,4}\s*室")),
+    ("居民姓名", re.compile(
+        r"(?:居民|住户|户主|联系人|当事人)\s*"
+        r"(?:[：:]\s*[\u4e00-\u9fff]{2,4}(?=[，。；;\s])|"
+        r"[\u4e00-\u9fff]{1,3}(?:某|先生|女士|奶奶|爷爷|大爷|阿姨))"
+    )),
+)
+
+
+def detect_public_personal_detail(text: str) -> list[str]:
+    """公开稿专用：拦截虽非强标识、但能直接定位个人的姓名/精确门牌。"""
+    return sorted({name for name, pat in _PUBLIC_DETAIL_PATTERNS if pat.search(text or "")})
+
 # ---------------------------------------------------------------- 字段三级管控
 # 1 明文   ：事项本身、楼栋等公开信息，可直接展示
 # 2 脱敏   ：姓名、门牌住址等可定位到人的信息，跨角色流转前需打码
@@ -75,13 +102,9 @@ class SecurityAgent(BaseAgent):
     def run(self, payload: dict) -> dict:
         text = payload.get("raw_text", "")
         masked = text
-        findings = []
-        for fname, (pat, level, mask_fn) in PATTERNS.items():
-            for m in pat.findall(masked):
-                # type 为契约字段，field 保留兼容旧调用方
-                findings.append({"type": fname, "field": fname,
-                                 "value_masked": mask_fn(m), "level": level})
-                masked = masked.replace(m, mask_fn(m))
+        findings = detect_sensitive(text)
+        for _fname, (pat, _level, mask_fn) in PATTERNS.items():
+            masked = pat.sub(lambda m: mask_fn(m.group(0)), masked)
         result = {"masked_text": masked, "findings": findings}
         self._audit("security_check", text, str(findings))
         return result

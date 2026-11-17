@@ -53,7 +53,7 @@ def main():
     # 而直接拒绝部署，所以发布副本用一份只含运行时依赖的干净清单（本地原文件保留说明）。
     with open(os.path.join(DST, "requirements.txt"), "w", encoding="utf-8") as fp:
         fp.write(
-            "# 发布副本专用依赖清单：运行时仅需以下四项，数据库用随项目走的 SQLite。\n"
+            "# 发布副本专用依赖清单：数据库使用随项目走的 SQLite。\n"
             "Flask>=3.0\n"
             "Flask-SQLAlchemy>=3.1\n"
             "requests>=2.31\n"
@@ -61,6 +61,8 @@ def main():
             "# 装不上时 export.build() 会抛 ExportUnavailable，页面提示「无法生成 Word」，\n"
             "# 其余功能不受影响——降级路径是设计好的，不是异常。\n"
             "python-docx>=1.1\n"
+            "# 居民诉求热点聚类使用；有预编译 wheel，不引入 sklearn/scipy。\n"
+            "numpy>=1.26\n"
         )
 
     # 发布沙箱探测 Python 项目入口时优先找 main.py / app.py，找不到就直接 python main.py 而失败。

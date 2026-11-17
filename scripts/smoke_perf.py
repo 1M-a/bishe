@@ -7,7 +7,7 @@
      详情页 no-cache（正文会变）、接口一律 no-store（提交后必须拿到新数据）；
   3. 页面不再带 Set-Cookie：默认每响应刷新会话会让浏览器对 HTML 缓存更保守，
      站内预取就复用不上；
-  4. 1MB 的 echarts 只在真正画图的两个页面出现，其余页面一个字节都不拉；
+  4. 1MB 的 echarts 只在报表需要时懒加载，其余页面一个字节都不拉；
   5. 全站不依赖任何外部 CDN（jsdelivr 国内实测 2.9s，还卡在 head 里阻塞渲染）。
 
 第 4、5 条是这轮"切页面慢"的两个真凶，所以单独断言：只要有人在别的页面
@@ -174,13 +174,11 @@ check("登录仍然下发 Cookie", bool(r_login.headers.getlist("Set-Cookie")),
       str(r_login.headers.getlist("Set-Cookie")))
 
 # ---------------------------------------------------------------- 4 资源本地化
-print("\n[4] echarts：本地资源 + 只在画图的页面加载")
+print("\n[4] echarts：本地资源 + 只在报表需要时懒加载")
 r_home = c.get("/")
 h = r_home.get_data(as_text=True)
-m = re.search(r'src="/static/vendor/echarts\.min\.js\?v=(\d+)"', h)
-check("首页引本地 echarts 且带版本号", bool(m), "没找到 vendor/echarts 引用")
-check("版本号形如 mtime", bool(m) and int(m.group(1)) > 1_600_000_000,
-      m.group(1) if m else "")
+check("精简首页不加载 echarts",
+      not re.search(r'<script[^>]*vendor/echarts', h))
 
 vendor = BASE / "app" / "static" / "vendor" / "echarts.min.js"
 check("echarts 文件确实在仓库里", vendor.exists(), str(vendor))

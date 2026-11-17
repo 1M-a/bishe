@@ -300,8 +300,10 @@ for bad, why in (("18.5h", "写死的节省工时"), ("[12,9,15,5,5]", "写死�
                  ("3栋楼道灯维修", "写死的今日任务")):
     check(f"不含{why}", bad not in code, bad)
 check("今日任务表体由前端渲染", 'id="todayBody"' in code)
-check("节省工时标注为估算", "估算" in code)
-check("柱状图数据来自接口变量", "L.counts" in code and "L.names" in code)
+check("首页不展示估算节省工时", "节省工时" not in code)
+check("首页不加载图表库", "echarts" not in code.lower())
+check("首页保留超期提醒", 'id="alertOverdue"' in code)
+check("首页保留退回重办提醒", 'id="alertReturned"' in code)
 
 print()
 print("=" * 66)

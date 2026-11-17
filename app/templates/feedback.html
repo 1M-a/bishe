@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}智能复核 · 极简减负平台{% endblock %}
+{% block page_title %}智能复核{% endblock %}
+{% block page_sub %}人工确认错误并沉淀规则{% endblock %}
+
+{% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px">
+  <a class="btn btn-primary" href="{{ url_for('views.feedback_page') }}">模型纠错</a>
+  {% if can('fde.view') %}<a class="btn btn-ghost" href="{{ url_for('views.trace_page') }}">处理轨迹</a>{% endif %}
+</div>
+<div class="card stat col-4"><div class="ic">📝</div><div><div class="num" id="sampleN">-</div><div class="lbl">纠错样本</div></div></div>
+<div class="card stat col-4"><div class="ic">✓</div><div><div class="num" id="ruleN">-</div><div class="lbl">可用规则</div></div></div>
+<div class="card stat col-4"><div class="ic">↻</div><div><div class="num" id="applyN">-</div><div class="lbl">已自动修正</div></div></div>
+
+<div class="card col-5">
+  <div class="card-h"><h2>提交纠错</h2></div>
+  <div class="field"><label>业务项</label><select class="inp" id="item"></select></div>
+  <div class="field"><label>错误类型</label><select class="inp" id="issue">
+    <option value="classify">事项分类错误</option>
+    <option value="route">业务线去向错误</option>
+  </select></div>
+  <div class="field"><label>触发词</label><input class="inp" id="trigger" maxlength="32" placeholder="例如：高空抛物"></div>
+  <div class="field"><label>正确类型</label><select class="inp" id="type">
+    {% for x in ('报修','人口变动','走访','调解','咨询','隐患排查','其他') %}<option>{{ x }}</option>{% endfor %}
+  </select></div>
+  <div class="field"><label>正确业务线</label><select class="inp" id="line">
+    {% for x in ('物业','综治','民政','卫健','街道') %}<option>{{ x }}</option>{% endfor %}
+  </select></div>
+  <div class="field"><label>原因</label><textarea class="inp" id="reason" rows="3" placeholder="说明原判断为什么不对"></textarea></div>
+  <button class="btn primary" id="submit">确认纠错</button>
+</div>
+
+<div class="card col-7">
+  <div class="card-h"><h2>最近纠错</h2><span class="hint">相同规则确认 3 次后自动应用</span></div>
+  <div class="table-wrap"><table><thead><tr><th>事项</th><th>触发词</th><th>修正</th><th>支持</th><th>应用</th></tr></thead><tbody id="rows"></tbody></table></div>
+</div>
+
+<script>
+var CANDIDATES = {};
+
+function loadCandidates(){
+  return api('/api/feedback/candidates').then(function(r){
+    if(r.code !== 0) throw new Error(r.msg || '业务项加载失败');
+    var sel = document.getElementById('item');
+    sel.innerHTML = (r.data.items || []).map(function(x){
+      CANDIDATES[x.id] = x;
+      return '<option value="' + x.id + '">#' + x.id + ' ' + esc(x.subject) + '</option>';
+    }).join('');
+    if(!sel.innerHTML) sel.innerHTML = '<option value="">暂无可复核业务项</option>';
+    syncForm();
+  });
+}
+
+function syncForm(){
+  var x = CANDIDATES[document.getElementById('item').value];
+  if(!x) return;
+  document.getElementById('type').value = x.type || '其他';
+  document.getElementById('line').value = (x.target_lines || [])[0] || '综治';
+}
+
+function loadRows(){
+  return api('/api/feedback').then(function(r){
+    if(r.code !== 0) throw new Error(r.msg || '纠错记录加载失败');
+    var d = r.data;
+    document.getElementById('sampleN').textContent = d.counts.samples;
+    document.getElementById('ruleN').textContent = d.counts.rules_ready;
+    document.getElementById('applyN').textContent = d.counts.applications;
+    document.getElementById('rows').innerHTML = (d.items || []).map(function(x){
+      var after = x.after || {};
+      return '<tr><td>#' + x.work_item_id + '</td><td>' + esc(x.trigger) + '</td>' +
+        '<td>' + esc((after.type || '') + ' / ' + (after.target_lines || []).join('、')) + '</td>' +
+        '<td>' + x.support + (x.support >= 3 ? ' ✓' : '') + '</td><td>' + x.applied_count + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">暂无纠错样本</td></tr>';
+  });
+}
+
+document.getElementById('item').addEventListener('change', syncForm);
+document.getElementById('submit').addEventListener('click', function(){
+  var btn = this;
+  var body = {
+    work_item_id: document.getElementById('item').value,
+    issue_type: document.getElementById('issue').value,
+    trigger: document.getElementById('trigger').value.trim(),
+    corrected_type: document.getElementById('type').value,
+    corrected_lines: [document.getElementById('line').value],
+    reason: document.getElementById('reason').value.trim()
+  };
+  btn.disabled = true;
+  api('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){
+      if(r.code !== 0) throw new Error(r.msg || '提交失败');
+      toast(r.data.msg || '已记录', 'ok');
+      document.getElementById('trigger').value = '';
+      document.getElementById('reason').value = '';
+      return loadRows();
+    }).catch(function(e){ toast(e.message || '提交失败', 'err'); })
+    .finally(function(){ btn.disabled = false; });
+});
+
+Promise.all([loadCandidates(), loadRows()]).catch(function(e){ toast(e.message, 'err'); });
+</script>
+{% endblock %}

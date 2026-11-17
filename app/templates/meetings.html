@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}居务议事 · 极简减负平台{% endblock %}
+{% block page_title %}居务议事{% endblock %}
+{% block page_sub %}议题建档 · 签到校验 · 决议转督办 · 居务公开{% endblock %}
+
+{% block content %}
+<div class="card stat col-3"><div><div class="num" id="cDraft">-</div><div class="lbl">筹备中</div></div></div>
+<div class="card stat col-3"><div><div class="num" id="cNotified">-</div><div class="lbl">已通知</div></div></div>
+<div class="card stat col-3"><div><div class="num" id="cFinal">-</div><div class="lbl">已定稿</div></div></div>
+<div class="card stat col-3"><div><div class="num" id="cTotal">-</div><div class="lbl">会议总数</div></div></div>
+
+{% if can('meeting.manage') %}
+<div class="card col-4">
+  <div class="card-h"><h2>新建会议</h2><span class="hint">先建会，再逐项形成决议</span></div>
+  <div class="card-b">
+    <div class="field"><label>会议标题</label><input class="inp" id="mTitle" maxlength="128" placeholder="例如：11 月第一次居务会议"></div>
+    <div class="field"><label>会议类型</label><select class="inp" id="mKind">
+      <option>居务会</option><option>两委联席会</option><option>居民代表会议</option><option>议事协商</option>
+    </select></div>
+    <div class="field"><label>时间</label><input class="inp" id="mHeld" type="datetime-local"></div>
+    <div class="field"><label>地点</label><input class="inp" id="mLocation" maxlength="128" placeholder="社区会议室"></div>
+    <button class="btn btn-primary" id="createBtn" style="width:100%;justify-content:center" onclick="createMeeting()">新建会议</button>
+  </div>
+</div>
+<div class="card col-8">
+{% else %}
+<div class="card col-12">
+{% endif %}
+  <div class="card-h"><h2>会议台账</h2><span class="hint">街道可监督查看，物业不接触内部议事材料</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>会议</th><th>时间地点</th><th>进度</th><th>产出</th><th>操作</th></tr></thead>
+    <tbody id="meetingRows"><tr><td colspan="5" style="text-align:center;color:var(--muted)">加载中…</td></tr></tbody>
+  </table></div>
+</div>
+
+<div class="card col-12" id="detailCard" style="display:none">
+  <div class="card-h"><h2 id="dTitle">会议详情</h2><span class="hint" id="dMeta"></span></div>
+  <div class="card-b">
+    <div id="agenda"></div>
+
+    {% if can('meeting.manage') %}
+    <div id="editArea">
+      <hr style="border:0;border-top:1px solid var(--line);margin:18px 0">
+      <h3 style="margin:0 0 12px">新增议题</h3>
+      <div class="tk-row">
+        <div class="field"><label>议题标题</label><input class="inp" id="iTitle" maxlength="128"></div>
+        <div class="field"><label>情况说明</label><input class="inp" id="iDetail" maxlength="500"></div>
+      </div>
+      <button class="btn btn-ghost" onclick="addItem()">添加议题</button>
+      <button class="btn btn-primary" id="notifyBtn" onclick="notifyMeeting()">发出会议通知</button>
+    </div>
+
+    <div id="finalArea" style="display:none">
+      <hr style="border:0;border-top:1px solid var(--line);margin:18px 0">
+      <h3 style="margin:0 0 12px">签到与定稿</h3>
+      <div class="tk-row">
+        <div class="field"><label>应到人数</label><input class="inp" id="expected" type="number" min="0" value="0"></div>
+        <div class="field"><label>实到人数</label><input class="inp" id="present" type="number" min="0" value="0"></div>
+      </div>
+      <div class="field"><label>内部会议记录（不会发布到居民端）</label><textarea class="fde-input" id="minutes" rows="5" style="min-height:110px"></textarea></div>
+      <div class="field"><label>公开摘要（仅此栏及标记公开的决议可发布）</label><textarea class="fde-input" id="publicSummary" rows="3" style="min-height:80px"></textarea></div>
+      <button class="btn btn-primary" onclick="finalizeMeeting()">定稿并生成督办任务</button>
+    </div>
+
+    <div id="publishArea" style="display:none">
+      <hr style="border:0;border-top:1px solid var(--line);margin:18px 0">
+      <button class="btn btn-primary" id="publishBtn" onclick="publishMeeting()">发布居务公开</button>
+      <span class="hint" id="publishHint"></span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAN_MANAGE = {{ 'true' if can('meeting.manage') else 'false' }};
+let current = null;
+
+function statusBadge(s){
+  if(s === 'finalized') return '<span class="badge b-green">已定稿</span>';
+  if(s === 'notified') return '<span class="badge b-blue">已通知</span>';
+  return '<span class="badge b-orange">筹备中</span>';
+}
+
+async function meetingApi(url, options){
+  try { return await api(url, options); }
+  catch(e){ alert('操作失败：' + (e.message || '网络异常，请重试')); return null; }
+}
+
+async function loadMeetings(){
+  let j;
+  try { j = await api('/api/meetings'); }
+  catch(e){ return listFail('meetingRows', 5, e.message); }
+  if(j.code !== 0) return listFail('meetingRows', 5, j.msg);
+  const d = j.data;
+  document.getElementById('cDraft').textContent = d.counts.draft;
+  document.getElementById('cNotified').textContent = d.counts.notified;
+  document.getElementById('cFinal').textContent = d.counts.finalized;
+  document.getElementById('cTotal').textContent = d.counts.total;
+  const tb = document.getElementById('meetingRows');
+  if(!d.items.length){ tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted)">暂无会议</td></tr>'; return; }
+  tb.innerHTML = d.items.map(m => `<tr>
+    <td><b>${esc(m.title)}</b><div class="tk-detail">${esc(m.kind)} · ${esc(m.org)}</div></td>
+    <td>${esc(m.held_at)}<div class="tk-detail">${esc(m.location)||'地点待定'}</div></td>
+    <td>${statusBadge(m.status)}</td>
+    <td>${m.decision_count} 项决议 / ${m.task_count} 项督办</td>
+    <td><button class="btn btn-ghost" onclick="openMeeting(${m.id})">查看</button></td>
+  </tr>`).join('');
+}
+
+async function createMeeting(){
+  const btn = document.getElementById('createBtn');
+  const body = {title:document.getElementById('mTitle').value.trim(), kind:document.getElementById('mKind').value,
+    held_at:document.getElementById('mHeld').value, location:document.getElementById('mLocation').value.trim()};
+  btn.disabled = true;
+  try{
+    const j = await api('/api/meetings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(j.code !== 0){ alert(j.msg); return; }
+    document.getElementById('mTitle').value = '';
+    await loadMeetings(); await openMeeting(j.data.id);
+  } finally { btn.disabled = false; }
+}
+
+async function openMeeting(id){
+  const j = await meetingApi(`/api/meetings/${id}`);
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  current = j.data;
+  document.getElementById('detailCard').style.display = '';
+  document.getElementById('dTitle').textContent = current.title;
+  document.getElementById('dMeta').textContent = `${current.kind} · ${current.held_at} · ${current.location||'地点待定'} · ${current.org}`;
+  renderAgenda();
+  if(CAN_MANAGE){
+    document.getElementById('editArea').style.display = current.status === 'finalized' ? 'none' : '';
+    document.getElementById('finalArea').style.display = current.status === 'notified' ? '' : 'none';
+    document.getElementById('publishArea').style.display = current.status === 'finalized' ? '' : 'none';
+    document.getElementById('notifyBtn').textContent = current.status === 'notified' ? '已发出通知' : '发出会议通知';
+    document.getElementById('expected').value = current.expected_count || 0;
+    document.getElementById('present').value = current.present_count || 0;
+    document.getElementById('minutes').value = current.minutes_md || '';
+    document.getElementById('publicSummary').value = current.public_summary || '';
+    document.getElementById('publishBtn').disabled = !!current.published_notice_id;
+    document.getElementById('publishHint').textContent = current.published_notice_id ? `已生成公告 #${current.published_notice_id}` : '';
+  }
+  document.getElementById('detailCard').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderAgenda(){
+  const root = document.getElementById('agenda');
+  if(!current.items.length){ root.innerHTML = '<div style="color:var(--muted)">尚未添加议题。</div>'; return; }
+  root.innerHTML = current.items.map((it, idx) => {
+    const task = it.task_id ? `<span class="badge b-green">已转任务 #${it.task_id}</span>` : '';
+    const pub = it.is_public ? '<span class="badge b-blue">可公开</span>' : '<span class="badge">内部</span>';
+    if(!CAN_MANAGE || current.status === 'finalized') return `<section style="padding:12px 0;border-bottom:1px solid var(--line)">
+      <b>${idx+1}. ${esc(it.title)}</b> ${pub} ${task}<div class="tk-detail">${esc(it.detail)||'—'}</div>
+      <div style="margin-top:8px">${esc(it.decision)||'尚未形成决议'}</div></section>`;
+    return `<section style="padding:12px 0;border-bottom:1px solid var(--line)">
+      <b>${idx+1}. ${esc(it.title)}</b><div class="tk-detail">${esc(it.detail)||'—'}</div>
+      <div class="field"><label>决议内容</label><textarea class="fde-input" id="dec_${it.id}" rows="2" style="min-height:70px">${esc(it.decision)}</textarea></div>
+      <div class="tk-row"><div class="field"><label>承办角色（不转任务可留空）</label><select class="inp" id="role_${it.id}">
+        <option value="">不转任务</option><option value="community" ${it.assignee_role==='community'?'selected':''}>社区</option><option value="property" ${it.assignee_role==='property'?'selected':''}>物业</option>
+      </select></div><div class="field"><label>承办单位</label><input class="inp" id="org_${it.id}" value="${esc(it.assignee_org)}"></div></div>
+      <div class="tk-row"><div class="field"><label>截止时间</label><input class="inp" id="ddl_${it.id}" type="datetime-local" value="${esc((it.deadline||'').replace(' ','T'))}"></div>
+      <div class="field"><label><input id="pub_${it.id}" type="checkbox" ${it.is_public?'checked':''}> 该决议可进入居务公开</label></div></div>
+      <button class="btn btn-ghost" onclick="saveDecision(${it.id})">保存决议</button></section>`;
+  }).join('');
+}
+
+async function addItem(){
+  const body = {title:document.getElementById('iTitle').value.trim(), detail:document.getElementById('iDetail').value.trim()};
+  const j = await meetingApi(`/api/meetings/${current.id}/items`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  document.getElementById('iTitle').value=''; document.getElementById('iDetail').value='';
+  await openMeeting(current.id); await loadMeetings();
+}
+
+async function notifyMeeting(){
+  const j = await meetingApi(`/api/meetings/${current.id}/notify`, {method:'POST'});
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  await openMeeting(current.id); await loadMeetings();
+}
+
+async function saveDecision(id){
+  const body = {decision:document.getElementById(`dec_${id}`).value.trim(), assignee_role:document.getElementById(`role_${id}`).value,
+    assignee_org:document.getElementById(`org_${id}`).value.trim(), deadline:document.getElementById(`ddl_${id}`).value,
+    is_public:document.getElementById(`pub_${id}`).checked};
+  const j = await meetingApi(`/api/meetings/${current.id}/items/${id}/decision`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  await openMeeting(current.id); await loadMeetings();
+}
+
+async function finalizeMeeting(){
+  const body = {expected_count:Number(document.getElementById('expected').value||0), present_count:Number(document.getElementById('present').value||0),
+    minutes_md:document.getElementById('minutes').value.trim(), public_summary:document.getElementById('publicSummary').value.trim()};
+  const j = await meetingApi(`/api/meetings/${current.id}/finalize`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  await openMeeting(current.id); await loadMeetings();
+}
+
+async function publishMeeting(){
+  if(!confirm('确认将公开摘要和标记为可公开的决议发布到居民端？内部会议记录不会发布。')) return;
+  const j = await meetingApi(`/api/meetings/${current.id}/publish`, {method:'POST'});
+  if(!j) return;
+  if(j.code !== 0){ alert(j.msg); return; }
+  await openMeeting(current.id); alert(`居务公开已发布，公告 #${j.data.notice_id}`);
+}
+
+(function(){
+  const d = new Date(Date.now() + 864e5); const p=n=>String(n).padStart(2,'0');
+  const el=document.getElementById('mHeld'); if(el) el.value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T09:30`;
+})();
+loadMeetings();
+</script>
+{% endblock %}

@@ -17,7 +17,6 @@
   <div class="p-head-row">
     <div>
       <div class="p-brand"><span class="dot"></span>幸福里 · 居民服务</div>
-      <div class="sub">{% block sub %}有事说一声，社区来办{% endblock %}</div>
     </div>
     <a class="p-staff" href="{{ url_for('views.login') }}">工作人员入口</a>
   </div>
@@ -27,16 +26,10 @@
 {% block body %}{% endblock %}
 </main>
 
-<footer class="p-foot">
-  本页面为居民服务入口，不采集与本事项无关的信息。<br>
-  提交后请保存 6 位查询码，凭手机号与查询码可随时查看办理进度。
-</footer>
-
 <nav class="p-nav">
   <a href="{{ url_for('portalviews.home') }}" class="{{ 'on' if ep in ('portalviews.home',) else '' }}"><span class="ico">🏠</span>首页</a>
   <a href="{{ url_for('portalviews.report') }}" class="{{ 'on' if ep == 'portalviews.report' else '' }}"><span class="ico">✍️</span>反映问题</a>
-  <a href="{{ url_for('portalviews.notices') }}" class="{{ 'on' if ep in ('portalviews.notices','portalviews.notice') else '' }}"><span class="ico">📢</span>公告</a>
-  <a href="{{ url_for('portalviews.my') }}" class="{{ 'on' if ep in ('portalviews.my','portalviews.ticket','portalviews.query') else '' }}"><span class="ico">📋</span>我的</a>
+  <a href="{{ url_for('portalviews.query') }}" class="{{ 'on' if ep == 'portalviews.query' else '' }}"><span class="ico">🚦</span>查进度</a>
 </nav>
 <script>
 /* 居民端的请求封装，与内部站 base.html 的 window.api 保持同名同形状。

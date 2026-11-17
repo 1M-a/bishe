@@ -48,7 +48,7 @@
 | F10 | RAG 知识库（BM25 检索 + 本地模型带出处作答） | `/kb` |
 | F11 | 任务下发与看板（街道 → 社区/物业，行级隔离） | `/tasks` |
 | F12 | 字段三级管控（明文/脱敏/加密，`field_security` 可查可审） | 首录结果内展示 |
-| F13 | 居民端：免注册填报 → 6 位查询码 → 进度查询 → 三级联系人 | `/portal`（手机优先，独立布局） |
+| F13 | 居民端：系统自动填充必要身份字段、文字/截图轻量填报、本机可用时 OCR、红黄绿进度灯 | `/portal`（手机优先，独立布局） |
 | F14 | 公告发布：上级文件丢进 `data/notices/` 自动解析编排，双输出（打印版/发布版） | `/notices` · `/portal/notices` |
 | F15 | 报表导出 Excel（6 表快照件：概览/业务线/类型/工单/明细/说明，零依赖生成） | `/reports` → 📥 |
 | F16 | 收文办文（上级发文 → 签收 → **办结留痕** → 社区落地件 → 红头 Word / md / txt） | `/notices` |
@@ -65,6 +65,10 @@
 | F27 | 长尾风险预警（风险分可拆项显示；反复投诉从 2 次报；跨单位转派识别踢皮球；超 30 天未结；投诉热点词表 + 聚类纯度如实标注） | `/risk` |
 | F28 | 多 Agent 协作与冲突消解（黑板 + 冲突检测 + 「更严者胜」裁定；轨迹逐步落库可回放；定级在建单之前，Agent 只执行不改结论） | `/trace` |
 | F29 | 人员底册（台账格式来自街道下发的残疾人 / 防溺水 / 留守儿童四表；身份证哈希去重、姓名证件电话全脱敏；地址定位精度如实标注；报修地址命中重点人员户自动提级）。**演示库为 300 条合成数据**，真实台账已移出项目，原因见 `docs/35` §10 | `/persons` |
+| F30 | 居务会议与议事（建会 → 议题 → 通知 → 签到/过半校验 → 决议 → 自动转督办任务 → 居务公开；内部纪要与公开稿物理分栏） | `/meetings` |
+| F31 | 居民数据治理（全角/空白/重复标点规范化、同手机号 30 天精确与高相似度去重、处理痕迹可回放） | `/api/portal/report` |
+| F32 | 模型纠错闭环（居委登记错判 → 同向确认 3 次 → 后续同类自动修正并写 Agent 轨迹） | `/feedback` |
+| F33 | 截图采集与红黄绿进度（本地 OCR 可选、图片随机名+哈希存证、进度灯只由服务端状态计算） | `/api/fde/capture/*` · `/portal` |
 
 ---
 
@@ -105,7 +109,7 @@ bise4/
 │  ├─ llm/             # 唯一模型入口 client.py + 并发闸门 gate.py
 │  ├─ templates/       # 页面模板（base.html 继承）
 │  ├─ static/css/      # Tabler 风格样式
-│  ├─ models.py        # 13 张表
+│  ├─ models.py        # 核心业务表与只追加留痕表
 │  ├─ auth.py          # RBAC / 登录 / 演示账号与任务种子
 │  ├─ admin.py         # 账号治理（注册 / 待审核 / 用户与权限）
 │  ├─ db_tuning.py     # SQLite WAL + busy_timeout
@@ -115,7 +119,7 @@ bise4/
 ├─ 启动系统.bat        # 一键启动（菜单：启动/自检/灌数据/停止）
 ├─ 停止系统.bat        # 停止服务
 ├─ data/               # community.db / kb 知识库 / **notices 上级文件投递口** / 实验 JSON
-├─ docs/               # 00~38 设计与实验文档（口径、踩坑、审查记录）
+├─ docs/               # 00~43 设计与实验文档（口径、踩坑、审查记录）
 └─ scripts/            # 启动自检、评测、压测、长稳、种子、出图脚本
 ```
 
@@ -200,14 +204,14 @@ python run.py                           # http://127.0.0.1:5000
 
 | 账号 | 密码 | 角色 | 落地页 |
 |------|------|------|--------|
-| `admin` | `admin123` | 系统管理员 | 用户与权限 `/admin/users` |
+| `admin` | 部署后单独设置，见本机 `data/_new_password.txt` | 系统管理员 | 用户与权限 `/admin/users` |
 | `wang` | `123456` | 社区工作者 王社工 | 首录台 `/` |
 | `wuye` | `123456` | 物业 李经理 | 工单中心 `/orders` |
 | `jiedao` | `123456` | 街道 张科长（**上级单位**） | 任务看板 `/tasks` |
 | — | — | **居民（第四类使用者）** | **`/portal` 免登录** |
 
-> 管理员密码与其余三个不同，因为管理员能改所有人的权限——演示库密码是公开的，
-> 用同一个 `123456` 等于任何拿到链接的人都能接管账号体系。
+> 管理员密码与其余账号不同，因为管理员能改所有人的权限。ECS 部署后会通过改密脚本生成独立密码，
+> 当前密码只保存在本机被忽略的 `data/_new_password.txt` 和 ECS 的私有配置文件中；为方便演示，管理员登录卡片会在运行时自动填入该密码。
 >
 > 新同事可自助注册（登录页「新同事？申请工作账号」）：注册后是
 > 「社区工作者 · 待审核 · 零权限」，管理员在「用户与权限」核对身份并勾选权限后才可用，
@@ -265,8 +269,14 @@ python run.py                           # http://127.0.0.1:5000
 | `smoke_person.py` | 人员底册：脱敏零残留 / 社区收窄 / 反查结论与派单同源 / 派单提级 / 导入幂等（61 项） | `python scripts/smoke_person.py` |
 | `smoke_kb.py` | 知识库检索与问答（27 项断言） | `python scripts/smoke_kb.py` |
 | `smoke_portal.py` | 居民端 + 公告全链路（80 项断言） | `python scripts/smoke_portal.py` |
+| `smoke_feedback_loop.py` | 居民数据清洗/去重 + 居委人工纠错 + 三次确认规则迭代 + 轨迹与审计（38 项） | `python scripts/smoke_feedback_loop.py` |
+| `smoke_meetings.py` | 居务会议：议题、通知、签到过半、决议转任务、公开拦截与幂等（35 项） | `python scripts/smoke_meetings.py` |
+| `smoke_capture.py` | 截图采集：草稿隔离、确认入库、CSV 导出、作废与审计（15 项） | `python scripts/smoke_capture.py` |
+| `smoke_data_reset.py` | 数据重置：在线快照、附件打包、备份下载/删除与权限（35 项） | `python scripts/smoke_data_reset.py` |
+| `smoke_ecs_archive_sync.py` | ECS 归档同步：快照校验、增量留档、失败不覆盖（3 项） | `python scripts/smoke_ecs_archive_sync.py` |
+| `smoke_simplification.py` | 角色视角精简：导航收敛、合并页面、管理员不变、岗位权限模板（87 项） | `python scripts/smoke_simplification.py` |
 | `smoke_security.py` | 越权 / 伪造 / 爆破 / Cookie（32 项） | `python scripts/smoke_security.py` |
-| `smoke_security_hard.py` | 安全加固：响应头 / 健康分档 / 公告 scope 越权 / 查询码锁定 / 注册限流 / Cookie Secure / 导出留痕 + 输出转义守卫 + 公网入口可信 IP/状态码/提交闸（69 项） | `python scripts/smoke_security_hard.py` |
+| `smoke_security_hard.py` | 安全加固：响应头 / 健康分档 / 公告 scope 越权 / 查询码锁定 / 注册限流 / Cookie Secure / 导出留痕 + 输出转义守卫 + 公网入口可信 IP/状态码/提交闸（71 项） | `python scripts/smoke_security_hard.py` |
 | `smoke_admin.py` | 注册审核 + 建号 + 按人授权（71 项） | `python scripts/smoke_admin.py` |
 | `smoke_notice_flow.py` | 收文 → 签收 → 办结 → 办文 → 导出 → 发布（86 项） | `python scripts/smoke_notice_flow.py` |
 | `smoke_superior.py` | 上级单位账号 + 授权边界 + 督办视角（67 项） | `python scripts/smoke_superior.py` |
@@ -310,6 +320,7 @@ python run.py                           # http://127.0.0.1:5000
 | `start_llm_channel.py` | 一键起"网关 + 隧道"并写入新地址（线上模型通道） | `python scripts/start_llm_channel.py` |
 | `audit_all.py` | **一键安全与流程体检**：凭据 / 会话 / 权限 / 前端 / 数据 / 线上共 29 项，有 FAIL 退出码 1 | `python scripts/audit_all.py`；线上 `--target ecs` |
 | `backup_db.py` | 数据库备份：在线一致性快照 + 三关自检 + 轮转（可注册每日计划任务） | `python scripts/backup_db.py --install-task` |
+| `ecs_archive_sync.py` | ECS 线上业务数据只读归档：校验后按变化留档，不覆盖本机工作库；可安装每小时计划任务 | `python scripts/ecs_archive_sync.py --install-task` |
 | `rotate_password.py` | 换掉默认口令（默认只预演，`--apply` 才真正改并验证） | `python scripts/rotate_password.py --target ecs --apply` |
 
 > 冒烟脚本各自带独立库（`data/smoke_*.db`，每次重建），直接跑不会动 `community.db`。
@@ -324,9 +335,8 @@ python scripts\audit_all.py     :: 六组 29 项，几秒出结果，有 FAIL �
 python scripts\backup_db.py     :: 先留一份可恢复的快照，再动别的
 ```
 
-体检有 FAIL 就别对外开。当前唯一常态 FAIL 是「默认口令仍可用」——
-演示期留着方便（`admin/admin123`），演示结束跑
-`python scripts\rotate_password.py --apply` 换成随机串，新口令会写到
+体检有 FAIL 就别对外开。正式部署前应确保「默认口令已失效」——
+运行 `python scripts\rotate_password.py --target ecs --apply` 换成随机串，新口令会写到
 `data/_new_password.txt`（已忽略，不进仓库）。
 
 想看线上而不是本机：`python scripts\audit_all.py --target ecs`（纯只读，
@@ -378,6 +388,11 @@ python scripts\backup_db.py     :: 先留一份可恢复的快照，再动别的
 | `docs/36-代码审查-性能与安全.md` | 性能与安全隐患分级、同步模型调用、代理头采信、状态码语义 |
 | `docs/37-公网入口安全加固（第一稿）.md` | P0 1~4 的修复：公网提交三层闸门、ProxyFix 可信 IP、GET 去写库、真实 429/403/404；含验证与残余边界 |
 | `docs/38-整体逻辑复查与P1修复.md` | 发文搜索通配符、超期统计下推 SQL、审计锁定索引、跨月评测假失败；34 套 1973 项与端到端复跑记录 |
+| `docs/39-完整代码审查-RAG安全与居务闭环.md` | 全仓审查、RAG 提示词注入与引用加固、审计只追加、居委会议事闭环 |
+| `docs/40-居民数据治理与模型纠错闭环.md` | 居民数据清洗与保守去重、居委人工纠错、三次确认后规则复用、权限与后续训练边界 |
+| `docs/41-角色视角精简与岗位权限分层.md` | 居民三入口、工作人员导航收敛、社区岗位权限模板、页面精简边界 |
+| `docs/42-ECS线上数据自动归档.md` | 只读归档、SQLite 在线快照、校验与恢复、计划任务与隐私边界 |
+| `docs/43-居民端轻量填报与红绿灯反馈.md` | 文字/截图轻量填报、本地 OCR 降级、红黄绿状态灯与会话/查询码边界 |
 | `docs/img/` | 论文用图（`fig1~4` 架构/时序/协作/减负，`fig7_*` 并发与长稳） |
 
 ---

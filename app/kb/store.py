@@ -11,6 +11,7 @@
 中文分词采用「字符二元组」而非 jieba：零额外依赖、零下载，
 对政策文本（用词规范、少口语）效果稳定。
 """
+import hashlib
 import math
 import re
 import threading
@@ -157,6 +158,9 @@ class KbIndex:
                 tf = Counter(toks)
                 self.chunks.append({
                     "doc_id": d.id, "title": d.title, "category": d.category,
+                    "source": d.source or "",
+                    "doc_hash": hashlib.sha256((d.content or "").encode("utf-8")).hexdigest(),
+                    "chunk_hash": hashlib.sha256(ch["text"].encode("utf-8")).hexdigest(),
                     "seq": seq, "heading": ch["heading"], "text": ch["text"],
                     "tokens": toks,
                     "title_tokens": set(tokenize(d.title)) | set(tokenize(ch["heading"])),
@@ -204,6 +208,10 @@ class KbIndex:
         if not scores:
             return []
 
+        # 保留原始 BM25 分与查询覆盖率。只返回归一化分会让“唯一一个很弱的命中”
+        # 也变成 1.0，生成层无法判断资料究竟够不够。
+        bm25_raw = dict(scores)
+
         # 可选稠密向量混合
         if self.vectors:
             qv = _embed([query], self.embed_model)
@@ -221,8 +229,13 @@ class KbIndex:
             c = self.chunks[idx]
             out.append({
                 "doc_id": c["doc_id"], "title": c["title"], "category": c["category"],
+                "source": c["source"], "doc_hash": c["doc_hash"],
+                "chunk_hash": c["chunk_hash"],
                 "seq": c["seq"], "heading": c["heading"],
                 "score": round(min(s / norm, 1.0), 4),
+                "bm25_raw": round(bm25_raw.get(idx, 0.0), 4),
+                "query_coverage": round(
+                    len(qset & set(c["tokens"])) / max(len(qset), 1), 4),
                 "snippet": _snippet(c["text"], q),
                 "text": c["text"],
             })

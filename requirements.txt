@@ -1,6 +1,9 @@
 Flask>=3.0
 Flask-SQLAlchemy>=3.1
 requests>=2.31
+python-docx>=1.1
+numpy>=1.26
+rapidocr_onnxruntime>=1.4
 
 # 运行时默认用 SQLite（随项目走，零配置），因此**不需要**任何数据库驱动。
 # 仅当把 DATABASE_URL 切到 MySQL 时才额外装驱动，届时单独执行：

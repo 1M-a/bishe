@@ -517,10 +517,17 @@ with app.app_context():
 
 with app.app_context():
     # 恢复成功后不能残留错误
-    with mock.patch("app.agents.knowledge.chat", return_value="依据资料：……"):
+    with mock.patch("app.agents.knowledge.chat",
+                    return_value="年满 80 周岁可申请。《高龄老人津贴申领与年审指南》"):
         r2 = KnowledgeAgent().answer("高龄津贴怎么申领")
     check("成功时 llm_used=True", r2["llm_used"] is True)
     check("成功时 llm_error 为空", r2.get("llm_error") == "", r2.get("llm_error"))
+    check("成功答案通过引用校验", r2.get("grounded") is True, r2)
+
+    with mock.patch("app.agents.knowledge.chat", return_value="这是一个没有出处的随意回答"):
+        r3 = KnowledgeAgent().answer("高龄津贴怎么申领")
+    check("无引用回答自动降级", "未通过引用校验" in r3["answer"], r3["answer"][:50])
+    check("无引用回答保留校验原因", "未引用" in r3.get("llm_error", ""), r3.get("llm_error"))
 
 # ================================================================ 8 健康接口
 print()

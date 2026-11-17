@@ -1,9 +1,14 @@
 {% extends "base.html" %}
-{% block title %}流程监控 · 极简减负平台{% endblock %}
-{% block page_title %}流程监控台{% endblock %}
-{% block page_sub %}从工单流转日志里算「卡在哪一步」 · 每条结论都标样本量{% endblock %}
+{% block title %}督办中心 · 极简减负平台{% endblock %}
+{% block page_title %}督办中心{% endblock %}
+{% block page_sub %}查看流程卡点与异常事项{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px">
+  <a class="btn btn-primary" href="{{ url_for('views.process_page') }}">流程督办</a>
+  <a class="btn btn-ghost" href="{{ url_for('views.risk_page') }}">风险清单</a>
+  <a class="btn btn-ghost" href="{{ url_for('views.orders') }}">工单明细</a>
+</div>
 <style>
   .pnote{background:#f5f8fd;border:1px solid #dde7f4;border-radius:10px;padding:11px 15px;
     font-size:12.5px;color:#4a5b70;line-height:1.75;margin-bottom:14px;}

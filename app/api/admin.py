@@ -7,7 +7,7 @@
 之后没人能再进后台。所以"停用自己""取消自己的管理员角色""停掉最后一个可用管理员"
 三种操作一律拒绝，并且拒绝也要留审计。
 """
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request, send_file
 from werkzeug.security import generate_password_hash
 
 from app.api import fail, ok
@@ -16,6 +16,8 @@ from app.auth import (PERMS, ROLE_PERMS, current_user, perm_required,
 from app.extensions import db
 from app.models import AuditLog, User
 from app.search import like_all
+from app.data_reset import (DataResetError, backup_path, clear_with_backup,
+                            list_backups)
 
 bp = Blueprint("adminapi", __name__)
 
@@ -29,6 +31,16 @@ def _audit(actor, action, detail):
     db.session.add(AuditLog(actor=(actor or "admin")[:32], agent="account",
                             action=action, output_digest=detail[:250]))
     db.session.commit()
+
+
+def _admin_only():
+    """数据备份/清理是破坏性运维动作，不能仅靠可委派的 user.manage。"""
+    me = current_user()
+    if me and me.role == "admin":
+        return None
+    if me:
+        _audit(me.name, "deny", "非系统管理员尝试访问数据备份/清理")
+    return fail("仅系统管理员可执行数据备份与清理", 403), 403
 
 
 def _active_admin_count(exclude_id=None):
@@ -317,3 +329,90 @@ def perms_catalog():
         "perms": PERMS,
         "roles": {k: sorted(v) for k, v in ROLE_PERMS.items()},
     })
+
+
+# ---------------------------------------------------------------- 数据备份与清理
+
+@bp.get("/data-backups")
+@perm_required("user.manage")
+def data_backups():
+    """管理员查看清理前快照；备份目录不放在静态资源下。"""
+    denied = _admin_only()
+    if denied:
+        return denied
+    try:
+        return ok({"items": list_backups(current_app)})
+    except DataResetError as exc:
+        return fail(str(exc), 400), 400
+
+
+@bp.get("/data-backups/<string:name>/download")
+@perm_required("user.manage")
+def data_backup_download(name):
+    denied = _admin_only()
+    if denied:
+        return denied
+    try:
+        path = backup_path(current_app, name)
+    except DataResetError as exc:
+        return fail(str(exc), 400), 400
+    except FileNotFoundError:
+        return fail("备份不存在", 404), 404
+    return send_file(path, as_attachment=True, download_name=path.name,
+                     mimetype="application/zip", max_age=0)
+
+
+@bp.delete("/data-backups/<string:name>")
+@perm_required("user.manage")
+def data_backup_delete(name):
+    denied = _admin_only()
+    if denied:
+        return denied
+    me = current_user()
+    try:
+        path = backup_path(current_app, name)
+    except DataResetError as exc:
+        return fail(str(exc), 400), 400
+    except FileNotFoundError:
+        return fail("备份不存在", 404), 404
+    path.unlink()
+    _audit(me.name if me else "admin", "data_backup_delete",
+           f"删除数据备份 {path.name}")
+    return ok({"name": path.name}, "备份已删除")
+
+
+@bp.post("/data-clear")
+@perm_required("user.manage")
+def data_clear():
+    """先生成可下载快照，再清空业务数据和非管理员账号。"""
+    denied = _admin_only()
+    if denied:
+        return denied
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or body.get("confirm") != "清空业务数据":
+        return fail("请输入“清空业务数据”确认操作", 400), 400
+    me = current_user()
+    actor = me.name if me else "admin"
+    # current_user() 的查询事务不能和 sqlite 原生清理事务并存。
+    db.session.commit()
+    db.session.remove()
+    db.engine.dispose()
+    try:
+        backup, result = clear_with_backup(current_app, actor)
+    except DataResetError as exc:
+        db.session.remove()
+        return fail(str(exc), 409), 409
+    except Exception:
+        db.session.remove()
+        current_app.logger.exception("管理员清空数据失败")
+        return fail("清空失败，原数据未被清除；请查看系统日志", 500), 500
+
+    db.engine.dispose()
+    db.session.remove()
+    db.session.add(AuditLog(
+        actor=actor[:32], agent="admin", action="data_clear",
+        output_digest=(f"清空业务数据；备份={backup['name']}；"
+                       f"删除表记录={sum(result['deleted'].values())}")[:250]))
+    db.session.commit()
+    return ok({"backup": backup, "result": result},
+              "数据已清空，管理员账号和系统配置已保留")

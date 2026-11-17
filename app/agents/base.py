@@ -30,10 +30,11 @@ class BaseAgent:
     def run(self, payload: dict) -> dict:
         raise NotImplementedError
 
-    def _audit(self, action: str, input_digest: str, output_digest: str):
+    def _audit(self, action: str, input_digest: str, output_digest: str,
+               actor: str = "system"):
         # 先脱敏再截断（顺序不能反：截断可能把号码切半导致漏检）
         db.session.add(AuditLog(
-            actor="system", agent=self.name, action=action,
+            actor=(actor or "system")[:32], agent=self.name, action=action,
             input_digest=mask_sensitive(input_digest)[:250],
             output_digest=mask_sensitive(output_digest)[:250],
         ))

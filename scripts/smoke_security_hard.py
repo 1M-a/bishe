@@ -40,6 +40,7 @@ from app import ratelimit                                      # noqa: E402
 from app.extensions import db                                  # noqa: E402
 from app.models import (AuditLog, Notice, Report,              # noqa: E402
                         ResidentTicket, User)
+from sqlalchemy import text                                   # noqa: E402
 
 app = create_app("dev")
 PASS = FAIL = 0
@@ -280,6 +281,26 @@ with app.app_context():
     check("审计记了操作人",
           all(r.actor and r.actor != "system" for r in logs), [r.actor for r in logs][:2])
 
+    probe = logs[0]
+    original = probe.output_digest
+    update_blocked = delete_blocked = False
+    try:
+        db.session.execute(text("UPDATE audit_log SET output_digest='tampered' WHERE id=:id"),
+                           {"id": probe.id})
+        db.session.commit()
+    except Exception:                                         # 数据库触发器应拒绝
+        db.session.rollback()
+        update_blocked = True
+    try:
+        db.session.execute(text("DELETE FROM audit_log WHERE id=:id"), {"id": probe.id})
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        delete_blocked = True
+    still = db.session.get(AuditLog, probe.id)
+    check("审计账本拒绝直接 SQL 更新", update_blocked and still.output_digest == original)
+    check("审计账本拒绝直接 SQL 删除", delete_blocked and still is not None)
+
 # 存储型 XSS：模板里的 innerHTML 插值必须过 esc()（前端函数，只能在源码层守）
 TPL = BASE / "app" / "templates"
 base_html = (TPL / "base.html").read_text(encoding="utf-8")
@@ -292,7 +313,7 @@ SINKS = {
     "ledgers.html": ["${esc(l.subject)", "${esc(l.feedback)"],
     "kb.html": ["${esc(d.title)", "${esc(h.snippet)", "${esc(h.title)"],
     "reports.html": ["${esc(v.summary)", "${esc(String(r.summary"],
-    "index.html": ["esc(d.masked_text)", "${esc(it.subject)", "${esc(o.property_co)"],
+    "index.html": ["esc(d.masked_text)", "esc(it.subject)", "esc(o.property_co)"],
     "system.html": ["${esc(k)", "${esc(d.output)"],
 }
 for fname, pats in SINKS.items():
@@ -354,14 +375,15 @@ with app.test_client() as c:
     check("全局提交闸超限 → HTTP 429", r.status_code == 429, r.status_code)
     ratelimit.reset()
 
-    # 并发准入：4 个槽位占满后第 5 个请求必须立即 429，而不是排进模型队列
+    # 并发准入：4 个槽位占满后，新的非重复诉求必须立即 429，
+    # 而不是排进模型队列。不能复用上面预置的“楼道灯坏了”，否则会先被去重层接住。
     from app.api import portal as portal_mod
     ratelimit.reset()
     for _ in range(4):
         portal_mod._REPORT_SLOTS.acquire()
     try:
         r = c.post("/api/portal/report",
-                   json={"phone": "13800138000", "text": "楼道灯坏了"})
+                   json={"phone": "13900139000", "text": "新建车棚充电线路存在异常火花"})
         check("公网并发槽位占满 → HTTP 429", r.status_code == 429, r.status_code)
     finally:
         for _ in range(4):

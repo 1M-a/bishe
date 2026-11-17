@@ -1,9 +1,13 @@
 {% extends "base.html" %}
-{% block title %}协作轨迹 · 极简减负平台{% endblock %}
-{% block page_title %}Agent 协作轨迹{% endblock %}
-{% block page_sub %}一次诉求处理 = 一条轨迹 · 哪个 Agent 定了什么、谁不同意、谁裁定{% endblock %}
+{% block title %}智能复核 · 处理轨迹{% endblock %}
+{% block page_title %}智能复核{% endblock %}
+{% block page_sub %}查看事项处理依据与协作记录{% endblock %}
 
 {% block content %}
+<div class="col-12" style="display:flex;gap:8px;margin-bottom:12px">
+  {% if can('feedback.view') %}<a class="btn btn-ghost" href="{{ url_for('views.feedback_page') }}">模型纠错</a>{% endif %}
+  <a class="btn btn-primary" href="{{ url_for('views.trace_page') }}">处理轨迹</a>
+</div>
 <style>
   .tc-note{background:#f5f8fd;border:1px solid #dde7f4;border-radius:10px;padding:11px 15px;
     font-size:12.5px;color:#4a5b70;line-height:1.75;margin-bottom:14px;}

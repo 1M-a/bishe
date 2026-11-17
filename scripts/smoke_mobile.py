@@ -43,11 +43,11 @@ def check(name, cond, detail=""):
     global PASS, FAIL
     if cond:
         PASS += 1
-        print(f"  ✓ {name}")
+        print(f"  [PASS] {name}")
     else:
         FAIL += 1
         FAILED.append(name)
-        print(f"  ✗ {name}" + (f"  [{detail}]" if detail else ""))
+        print(f"  [FAIL] {name}" + (f"  [{detail}]" if detail else ""))
 
 
 def login(c):
@@ -64,7 +64,7 @@ CSS_NC = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
 CSS_FLAT = re.sub(r"\{([^}]*)\}", lambda m: "{" + re.sub(r"\s+", "", m.group(1)) + "}", CSS_NC)
 
 # 登录后能打开的页面（含只有管理员看得到的 system / admin.users）
-PAGES = ["/", "/tasks", "/orders", "/ledgers", "/kb", "/notices",
+PAGES = ["/", "/tasks", "/meetings", "/orders", "/ledgers", "/kb", "/notices",
          "/reports", "/audit", "/system", "/admin/users"]
 
 print("[1] 样式表：断点与关键规则在位")
@@ -114,7 +114,7 @@ with app.test_client() as c:
             continue
         page = r.get_data(as_text=True)
         n_table = page.count("<table")
-        n_wrapped = len(re.findall(r'class="tw">\s*<table', page))
+        n_wrapped = len(re.findall(r'class="[^"]*\btw\b[^"]*"[^>]*>\s*<table', page))
         check(f"{url} 表格已包裹（{n_wrapped}/{n_table}）", n_table == n_wrapped,
               "有裸 table，窄屏会被撑宽")
 
@@ -133,10 +133,10 @@ check("无行内跨栏/多列栅格", not bad, ", ".join(bad[:4]))
 print("\n[5] 各页统计卡用的是栅格类（不是行内 span）")
 with app.test_client() as c:
     login(c)
-    for url in ["/", "/orders", "/ledgers", "/audit", "/notices", "/system", "/admin/users"]:
+    for url in ["/", "/meetings", "/orders", "/ledgers", "/audit", "/notices", "/system", "/admin/users"]:
         page = c.get(url).get_data(as_text=True)
-        has_col = re.search(r'class="[^"]*\bcard\b[^"]*\bcol-[34]\b', page) is not None
-        check(f"{url} 统计卡带 col-3/col-4", has_col)
+        has_col = re.search(r'class="[^"]*\bcard\b[^"]*\bcol-(?:3|4|6)\b', page) is not None
+        check(f"{url} 统计卡带响应式列类", has_col)
 
 print("\n[6] 居民端本来就是移动优先，别被改坏")
 portal_css = (BASE / "app" / "static" / "css" / "portal.css").read_text(encoding="utf-8")
@@ -156,10 +156,10 @@ check("没有把 .modal 写成默认 flex",
       not re.search(r"\.modal\{[^}]*display://s*flex", CSS_NC), "会把弹窗默认打开")
 check("只改 .modal.show 的定位", ".modal.show{align-items:flex-end" in CSS_FLAT)
 
-print("\n[8] 图表在尺寸变化后会重算")
+print("\n[8] 图表页面在尺寸变化后会重算")
 idx = (BASE / "app" / "templates" / "index.html").read_text(encoding="utf-8")
 rep = (BASE / "app" / "templates" / "reports.html").read_text(encoding="utf-8")
-check("首页图表监听 resize", "addEventListener('resize'" in idx)
+check("精简首页不再加载图表", "echarts" not in idx.lower())
 check("报表图表监听 resize", "addEventListener('resize'" in rep)
 check("报表重算只挂一次监听", "__repChartResize" in rep)
 

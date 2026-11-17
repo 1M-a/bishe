@@ -27,6 +27,7 @@ from app.itemstate import STAGE_RESIDENT, stage as item_stage, sync_ticket_statu
 from app.models import (AuditLog, EvidenceChain, FdeRecord, Ledger, Notice,
                         ResidentTicket, WorkItem, WorkOrder)
 from app.ratelimit import allow as _rate_ok
+from app.intake import content_hash, find_duplicate, normalize_text
 
 bp = Blueprint("portal", __name__)
 
@@ -61,6 +62,23 @@ _REPORT_SLOTS = threading.BoundedSemaphore(4)
 # 匿名请求的模型排队上限：社区内部可以等 40 秒，居民提交不值得等那么久，
 # 8 秒拿不到模型就直接走规则兜底，链路仍然完整。
 REPORT_QUEUE_TIMEOUT = 8.0
+
+
+def _request_data():
+    if request.is_json:
+        data = request.get_json(silent=True)
+        return data if isinstance(data, dict) else None
+    return request.form
+
+
+def _string_field(data, key, limit=None):
+    value = data.get(key, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError(key)
+    value = value.strip()
+    return value[:limit] if limit else value
 
 
 def _phone_key(phone: str) -> str:
@@ -114,6 +132,27 @@ def _remember(ticket_id: int):
     session["portal_tickets"] = ids[:10]
 
 
+def _append_ticket_photos(ticket: ResidentTicket, files: list, actor: str):
+    """安全追加居民图片；文件名随机化，内容哈希进入证据链。"""
+    current = evidence.load_attachments(ticket.attachments)
+    room = max(0, evidence.MAX_PHOTOS - len(current))
+    errors = []
+    if len(files) > room:
+        errors.append(f"最多 {evidence.MAX_PHOTOS} 张，当前还可添加 {room} 张")
+    saved = []
+    if room:
+        saved, rejected = evidence.save_photos(
+            files[:room], current_app.config["EVIDENCE_DIR"])
+        errors.extend(rejected)
+    if saved:
+        ticket.attachments = json.dumps(current + saved, ensure_ascii=False)
+        for photo in saved:
+            evidence.append("ticket", ticket.id, "attach", {
+                "name": photo["name"], "sha256": photo["sha256"], "size": photo["size"],
+            }, actor=actor)
+    return saved, errors
+
+
 def _batch_load(tickets: list[ResidentTicket]):
     """一次取齐多张单据的事项/工单/台账。
 
@@ -152,6 +191,8 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
 
     状态回写只发生在写路径（建单、居民表态、工单流转），见 itemstate.sync_ticket_status。
     """
+    from app.agents.supervise import SuperviseAgent
+
     rows = []
 
     for it in items:
@@ -173,11 +214,16 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
             confirm = "disputed"
         else:
             confirm = ""
+        # 居民红灯与督办告警必须使用同一 SLA 兜底口径（None/0 按 24h）。
+        overdue = any(SuperviseAgent.is_overdue(o) for o in orders)
+        light = ("red" if confirm == "disputed" or overdue else
+                 "green" if state == "已办结" else "yellow")
         rows.append({
             "type": it.type,
             "subject": it.subject,
             "orgs": orgs or ["社区服务站"],
             "state": state,
+            "traffic_light": light,
             "sla_hours": sla,
             "feedback": feedbacks[0] if feedbacks else "",
             "created_at": (orders[0].created_at.strftime("%m-%d %H:%M") if orders else
@@ -199,6 +245,13 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
     else:
         overall = "open"
 
+    if any(r["traffic_light"] == "red" for r in rows):
+        traffic_light = "red"
+    elif rows and all(r["traffic_light"] == "green" for r in rows):
+        traffic_light = "green"
+    else:
+        traffic_light = "yellow"
+
     # 整单层面的表态口径：全部事项都确认才算"已确认"。
     # 有一项不服就算"有争议"——宁可让居委会多看一条，也不能把
     # 居民的不满淹没在"大部分已确认"里。
@@ -219,6 +272,8 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M"),
         "status": overall,
         "status_text": {"open": "已受理", "doing": "处理中", "done": "已办结"}[overall],
+        "traffic_light": traffic_light,
+        "traffic_text": {"red": "需关注", "yellow": "处理中", "green": "已办结"}[traffic_light],
         "items": rows,
         "line_summary": t.line_summary,
         "confirm_status": confirm_overall,
@@ -247,11 +302,16 @@ def _ticket_payload_many(tickets: list[ResidentTicket]) -> list[dict]:
 
 @bp.post("/report")
 def report():
-    data = request.get_json(silent=True) or request.form or {}
-    phone = (data.get("phone") or "").strip()
-    name = (data.get("name") or "").strip()[:16]
-    address = (data.get("address") or "").strip()[:64]
-    text = (data.get("text") or "").strip()
+    data = _request_data()
+    if data is None:
+        return fail("请求格式不正确，请使用表单或 JSON 对象", 400), 400
+    try:
+        phone = _string_field(data, "phone")
+        name = _string_field(data, "name", 16)
+        address = _string_field(data, "address", 64)
+        text = _string_field(data, "text")
+    except TypeError:
+        return fail("手机号、称呼、位置和情况必须是文字", 400), 400
 
     # 三档限流：手机号是真实约束（一条诉求对应一个人），IP 是兜底，
     # 全局闸防"换手机号 + 换 IP"的脚本。全部在入参校验之前，
@@ -270,6 +330,33 @@ def report():
     if len(text) > 2000:
         return fail("内容过长，请控制在 2000 字以内", 400), 400
 
+    # 居民输入先过确定性质量层，再进入模型：模型只处理清洗后的文本，
+    # 去重也基于同一份规范化文本，避免“您好！！！灯坏了”和“灯坏了”各建一单。
+    normalized, quality_flags = normalize_text(text)
+    if len(normalized) < 5:
+        return fail("有效内容太少，请补充时间、地点或具体问题", 400), 400
+    previous, duplicate_kind, duplicate_score = find_duplicate(phone, normalized)
+    if previous:
+        _remember(previous.id)
+        actor = f"居民(尾号{phone[-4:]})"
+        saved, photo_errors = _append_ticket_photos(
+            previous, request.files.getlist("photos") if request.files else [], actor)
+        db.session.add(AuditLog(
+            actor=actor, agent="portal", action="dedupe",
+            input_digest=f"content={content_hash(normalized)[:16]}",
+            output_digest=(f"命中诉求#{previous.id}，{duplicate_kind}，"
+                           f"相似度 {duplicate_score:.4f}；追加图片 {len(saved)} 张")[:250]))
+        db.session.commit()
+        return ok({
+            "ticket_id": previous.id, "code": previous.code,
+            "deduplicated": True, "duplicate_of": previous.id,
+            "duplicate_kind": duplicate_kind,
+            "duplicate_score": duplicate_score,
+            "quality_flags": quality_flags,
+            "photos": len(saved), "photo_errors": photo_errors,
+            "msg": "已找到相同诉求，继续使用原查询码",
+        })
+
     # 居民身份不进 user 表，creator 只留可识别的痕迹（姓 + 手机尾号）
     label = f"居民{name[:1] + '某' if name else ''}(尾号{phone[-4:]})"
     from app.agents.orchestrator import Orchestrator
@@ -278,7 +365,7 @@ def report():
         return fail("系统当前提交繁忙，请稍后再试", 429), 429
     try:
         result = Orchestrator().handle_fde(
-            text, source="portal", creator=label,
+            normalized, source="portal", creator=label,
             queue_timeout=REPORT_QUEUE_TIMEOUT)
     except Exception:                                   # noqa: BLE001
         # 不把异常类名回给公网；细节交给全局错误记录器与审计
@@ -294,7 +381,11 @@ def report():
 
     ticket = ResidentTicket(
         code=_gen_code(), phone=phone, name=name, address=address,
-        raw_text=text, fde_id=result["fde_id"],
+        raw_text=normalized, normalized_text=normalized,
+        content_hash=content_hash(normalized),
+        quality_status="clean",
+        quality_flags=json.dumps(quality_flags, ensure_ascii=False),
+        fde_id=result["fde_id"],
         item_count=len(result["items"]),
         line_summary="/".join(lines),
         status="open",
@@ -342,6 +433,8 @@ def report():
         "line_summary": ticket.line_summary,
         "photos": len(saved),
         "photo_errors": photo_errors,
+        "deduplicated": False,
+        "quality_flags": quality_flags,
         "items": [{"type": it["type"], "subject": it["subject"],
                    "orgs": [LINE_TO_ORG.get(l, l) for l in it["target_lines"]]}
                   for it in result["items"]],
@@ -374,17 +467,6 @@ def query_ticket():
     return ok(_ticket_payload(t))
 
 
-@bp.get("/my")
-def my_tickets():
-    tickets = [t for t in (db.session.get(ResidentTicket, tid)
-                           for tid in session.get("portal_tickets", []))
-               if t]
-    views = _ticket_payload_many(tickets)
-    return ok({"tickets": [{k: p[k] for k in ("id", "code", "created_at", "status",
-                                              "status_text", "line_summary")}
-                           for p in views]})
-
-
 @bp.get("/ticket/<int:tid>")
 def ticket_detail(tid: int):
     t = db.session.get(ResidentTicket, tid)
@@ -410,12 +492,21 @@ def confirm_ticket(tid: int):
     if not _rate_ok(f"confirm:{tid}", 10, 60):
         return fail("操作太频繁，请稍后再试"), 429
 
-    d = request.get_json(silent=True) or request.form or {}
+    d = _request_data()
+    if d is None:
+        return fail("请求格式不正确，请使用表单或 JSON 对象", 400), 400
     # 布尔值别直接 bool("false")——字符串 "false" 是真值，会把"没解决"判成"已解决"。
     raw = d.get("ok")
+    if raw is not None and not isinstance(raw, (bool, int, str)):
+        return fail("确认结果格式不正确", 400), 400
+    try:
+        note = _string_field(d, "note", 512)
+        dispute_type = _string_field(d, "dispute_type")
+    except TypeError:
+        return fail("说明和争议类型必须是文字", 400), 400
     do_ok = raw is True or str(raw).lower() in ("1", "true", "yes", "ok")
     okc, msg, n = arbitration.resident_confirm(
-        t, do_ok, d.get("note") or "", d.get("dispute_type") or "")
+        t, do_ok, note, dispute_type)
     if not okc:
         return fail(msg, 400), 400
     sync_ticket_status(t.fde_id)

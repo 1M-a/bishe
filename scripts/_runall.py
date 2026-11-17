@@ -57,6 +57,10 @@ PATTERNS = [
     (re.compile(r"通过\s*(\d+)\D{0,12}?失败\s*(\d+)"), False),
     # N 通过 / M 失败
     (re.compile(r"(\d+)\s*通过\s*/\s*(\d+)\s*失败"), False),
+    # N 通过，M 失败（数字在“通过”前）
+    (re.compile(r"(\d+)\s*通过\D{0,8}?(\d+)\s*失败"), False),
+    # N passed, M failed（英文汇总，如 smoke_capture）
+    (re.compile(r"(\d+)\s+passed,\s*(\d+)\s+failed", re.I), False),
     # PASS N / M（M 是总数）
     (re.compile(r"PASS\s*(\d+)\s*/\s*(\d+)"), True),
     # 通过 N / M（M 是总数）
@@ -79,6 +83,11 @@ def parse(out):
                 # 总数 - 通过 = 失败；总数小于通过只可能是解析错了
                 return a, max(b - a, 0), "P%d" % (idx + 1)
             return a, b, "P%d" % (idx + 1)
+    # unittest 输出（如 smoke_ecs_archive_sync）：Ran N tests ... OK
+    if re.search(r"\bOK\b", out):
+        m = re.search(r"Ran\s+(\d+)\s+tests?", out)
+        if m:
+            return int(m.group(1)), 0, "UT"
     return None
 
 

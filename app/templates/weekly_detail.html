@@ -23,7 +23,7 @@
   </div>
   {% if can('weekly.manage') and w.status == 'draft' %}
   <div class="card-b" id="editBox" style="display:none">
-    <div class="field"><label>正文（Markdown）
+    <div class="field"><label>正文
       <span style="color:var(--muted);font-weight:400">数字部分建议不要改——改了就和取数快照对不上了</span></label>
       <textarea class="inp" id="bodyMd" rows="22" style="font-family:ui-monospace,Menlo,monospace;
         line-height:1.7;font-size:13px">{{ w.body_md }}</textarea>

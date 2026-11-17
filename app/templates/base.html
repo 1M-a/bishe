@@ -275,17 +275,19 @@ window.esc = function (v) {
     <div><b>极简减负平台</b><small>Community Agent System</small></div>
   </div>
   <nav class="nav">
+    {% if current_user.role == 'admin' %}
     <div class="nav-label">业务</div>
     {% if can('fde.create') %}
     <a href="{{ url_for('views.index') }}" class="{{ 'active' if request.endpoint=='views.index' }}"><span class="ico">📝</span>FDE 首录台</a>
     {% endif %}
-    {% if can('fde.view') %}
-    {# 紧挨着首录台：轨迹就是"我刚提交的那条诉求，系统内部怎么处理的"，
-       放在监督类入口（流程监控/风险预警）下面会让人以为它也是看别人的 #}
-    <a href="{{ url_for('views.trace_page') }}" class="{{ 'active' if request.endpoint=='views.trace_page' }}"><span class="ico">🧩</span>协作轨迹</a>
+    {% if can('feedback.view') or can('fde.view') %}
+    <a href="{{ url_for('views.feedback_page') if can('feedback.view') else url_for('views.trace_page') }}" class="{{ 'active' if request.endpoint in ('views.feedback_page','views.trace_page') }}"><span class="ico">↻</span>智能复核</a>
     {% endif %}
     {% if can('task.view') %}
     <a href="{{ url_for('views.tasks') }}" class="{{ 'active' if request.endpoint=='views.tasks' }}"><span class="ico">📋</span>任务看板</a>
+    {% endif %}
+    {% if can('meeting.view') %}
+    <a href="{{ url_for('views.meetings') }}" class="{{ 'active' if request.endpoint=='views.meetings' }}"><span class="ico">🗳️</span>居务议事</a>
     {% endif %}
     {% if can('person.view') %}
     {# 底册放在任务看板之后、公告之前：它是"做事前的背景资料"，
@@ -294,11 +296,7 @@ window.esc = function (v) {
     <a href="{{ url_for('views.persons_page') }}" class="{{ 'active' if request.endpoint=='views.persons_page' }}"><span class="ico">👥</span>人员底册</a>
     {% endif %}
     {% if can('order.view') %}
-    <a href="{{ url_for('views.orders') }}" class="{{ 'active' if request.endpoint=='views.orders' }}"><span class="ico">📤</span>物业工单</a>
-    {# 三个入口分开：工单是"办事"、监控是"看流程"、预警是"找最坏的那几件"。
-       合成一个页面会让人在办单时被迫看图表，在看图表时又想下去办单。 #}
-    <a href="{{ url_for('views.process_page') }}" class="{{ 'active' if request.endpoint=='views.process_page' }}"><span class="ico">⏱️</span>流程监控</a>
-    <a href="{{ url_for('views.risk_page') }}" class="{{ 'active' if request.endpoint=='views.risk_page' }}"><span class="ico">🎯</span>风险预警</a>
+    <a href="{{ url_for('views.process_page') }}" class="{{ 'active' if request.endpoint in ('views.orders','views.process_page','views.risk_page') }}"><span class="ico">⏱️</span>督办中心</a>
     {% endif %}
     {% if can('ledger.view') %}
     <a href="{{ url_for('views.ledgers') }}" class="{{ 'active' if request.endpoint=='views.ledgers' }}"><span class="ico">🗂️</span>台账中心</a>
@@ -306,20 +304,14 @@ window.esc = function (v) {
     {% if can('kb.view') %}
     <a href="{{ url_for('views.kb') }}" class="{{ 'active' if request.endpoint=='views.kb' }}"><span class="ico">📚</span>知识库</a>
     {% endif %}
-    {% if can('notice.view') %}
-    <a href="{{ url_for('views.notices') }}" class="{{ 'active' if request.endpoint in ('views.notices','views.notice_detail') }}"><span class="ico">📢</span>通知公告</a>
+    {% if can('notice.view') or can('doc.view') %}
+    <a href="{{ url_for('views.notices') if can('notice.view') else url_for('views.docs') }}" class="{{ 'active' if request.endpoint in ('views.notices','views.notice_detail','views.docs','views.doc_detail') }}"><span class="ico">📨</span>收发文</a>
     {% endif %}
-    {% if can('doc.view') %}
-    <a href="{{ url_for('views.docs') }}" class="{{ 'active' if request.endpoint in ('views.docs','views.doc_detail') }}"><span class="ico">📄</span>发文台</a>
-    {% endif %}
-    {% if can('weekly.view') %}
-    <a href="{{ url_for('views.weekly') }}" class="{{ 'active' if request.endpoint in ('views.weekly','views.weekly_detail') }}"><span class="ico">📅</span>工作周报</a>
+    {% if can('weekly.view') or can('report.view') %}
+    <a href="{{ url_for('views.weekly') if can('weekly.view') else url_for('views.reports') }}" class="{{ 'active' if request.endpoint in ('views.weekly','views.weekly_detail','views.reports') }}"><span class="ico">📅</span>材料报送</a>
     {% endif %}
     {% if can('report.view') or can('audit.view') or can('user.manage') %}
     <div class="nav-label">管理</div>
-    {% endif %}
-    {% if can('report.view') %}
-    <a href="{{ url_for('views.reports') }}" class="{{ 'active' if request.endpoint=='views.reports' }}"><span class="ico">📊</span>报表中心</a>
     {% endif %}
     {% if can('audit.view') %}
     <a href="{{ url_for('views.audit') }}" class="{{ 'active' if request.endpoint=='views.audit' }}"><span class="ico">🔐</span>审计日志</a>
@@ -328,6 +320,34 @@ window.esc = function (v) {
     {% if can('user.manage') %}
     <a href="{{ url_for('admin.users') }}" class="{{ 'active' if request.endpoint in ('admin.users','admin.user_detail') }}"><span class="ico">👥</span>用户与权限</a>
     <a href="{{ url_for('views.system') }}" class="{{ 'active' if request.endpoint=='views.system' }}"><span class="ico">🛰️</span>系统状态</a>
+    {% endif %}
+    {% elif current_user.role == 'community' %}
+    <div class="nav-label">日常办理</div>
+    {% if can('fde.create') %}<a href="{{ url_for('views.index') }}" class="{{ 'active' if request.endpoint=='views.index' }}"><span class="ico">📝</span>事项登记</a>{% endif %}
+    {% if can('task.view') %}<a href="{{ url_for('views.tasks') }}" class="{{ 'active' if request.endpoint=='views.tasks' }}"><span class="ico">📋</span>待办中心</a>{% endif %}
+    {% if can('order.view') %}<a href="{{ url_for('views.orders') }}" class="{{ 'active' if request.endpoint=='views.orders' }}"><span class="ico">📤</span>工单办理</a>{% endif %}
+    {% if can('ledger.view') %}<a href="{{ url_for('views.ledgers') }}" class="{{ 'active' if request.endpoint=='views.ledgers' }}"><span class="ico">🗂️</span>居民与台账</a>{% endif %}
+    {% if can('meeting.view') %}<a href="{{ url_for('views.meetings') }}" class="{{ 'active' if request.endpoint=='views.meetings' }}"><span class="ico">🗳️</span>居务议事</a>{% endif %}
+    {% if can('notice.view') or can('doc.view') %}<a href="{{ url_for('views.notices') if can('notice.view') else url_for('views.docs') }}" class="{{ 'active' if request.endpoint in ('views.notices','views.notice_detail','views.docs','views.doc_detail') }}"><span class="ico">📨</span>收发文</a>{% endif %}
+    {% if can('kb.view') %}<a href="{{ url_for('views.kb') }}" class="{{ 'active' if request.endpoint=='views.kb' }}"><span class="ico">📚</span>政策助手</a>{% endif %}
+    {% if can('weekly.view') or can('report.view') %}<a href="{{ url_for('views.weekly') if can('weekly.view') else url_for('views.reports') }}" class="{{ 'active' if request.endpoint in ('views.weekly','views.weekly_detail','views.reports') }}"><span class="ico">📊</span>材料报送</a>{% endif %}
+    {% if can('order.view') %}<a href="{{ url_for('views.process_page') }}" class="{{ 'active' if request.endpoint in ('views.process_page','views.risk_page') }}"><span class="ico">⏱️</span>督办中心</a>{% endif %}
+    {% if can('feedback.view') %}<a href="{{ url_for('views.feedback_page') }}" class="{{ 'active' if request.endpoint in ('views.feedback_page','views.trace_page') }}"><span class="ico">↻</span>智能复核</a>{% endif %}
+    {% elif current_user.role == 'property' %}
+    <div class="nav-label">物业办理</div>
+    {% if can('order.view') %}<a href="{{ url_for('views.orders') }}" class="{{ 'active' if request.endpoint=='views.orders' }}"><span class="ico">📤</span>我的工单</a>{% endif %}
+    {% if can('task.view') %}<a href="{{ url_for('views.tasks') }}" class="{{ 'active' if request.endpoint=='views.tasks' }}"><span class="ico">📋</span>街道任务</a>{% endif %}
+    {% if can('notice.view') or can('doc.view') %}<a href="{{ url_for('views.notices') if can('notice.view') else url_for('views.docs') }}" class="{{ 'active' if request.endpoint in ('views.notices','views.notice_detail','views.docs','views.doc_detail') }}"><span class="ico">📨</span>通知与来函</a>{% endif %}
+    {% elif current_user.role == 'street' %}
+    <div class="nav-label">监督与报送</div>
+    {% if can('task.view') %}<a href="{{ url_for('views.tasks') }}" class="{{ 'active' if request.endpoint=='views.tasks' }}"><span class="ico">📋</span>任务督办</a>{% endif %}
+    {% if can('order.view') %}<a href="{{ url_for('views.process_page') }}" class="{{ 'active' if request.endpoint in ('views.process_page','views.risk_page','views.orders') }}"><span class="ico">⏱️</span>督办中心</a>{% endif %}
+    {% if can('meeting.view') %}<a href="{{ url_for('views.meetings') }}" class="{{ 'active' if request.endpoint=='views.meetings' }}"><span class="ico">🗳️</span>居务监督</a>{% endif %}
+    {% if can('person.view') %}<a href="{{ url_for('views.persons_page') }}" class="{{ 'active' if request.endpoint=='views.persons_page' }}"><span class="ico">👥</span>人员底册</a>{% endif %}
+    {% if can('notice.view') or can('doc.view') %}<a href="{{ url_for('views.notices') if can('notice.view') else url_for('views.docs') }}" class="{{ 'active' if request.endpoint in ('views.notices','views.notice_detail','views.docs','views.doc_detail') }}"><span class="ico">📨</span>收发文</a>{% endif %}
+    {% if can('weekly.view') or can('report.view') %}<a href="{{ url_for('views.weekly') if can('weekly.view') else url_for('views.reports') }}" class="{{ 'active' if request.endpoint in ('views.weekly','views.weekly_detail','views.reports') }}"><span class="ico">📊</span>材料报送</a>{% endif %}
+    {% if can('kb.view') %}<a href="{{ url_for('views.kb') }}" class="{{ 'active' if request.endpoint=='views.kb' }}"><span class="ico">📚</span>政策助手</a>{% endif %}
+    {% if can('audit.view') %}<a href="{{ url_for('views.audit') }}" class="{{ 'active' if request.endpoint=='views.audit' }}"><span class="ico">🔐</span>审计日志</a>{% endif %}
     {% endif %}
   </nav>
   {% set lb = llm_badge() %}

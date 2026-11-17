@@ -106,6 +106,17 @@ check("内容真的变了（task#1 状态）",
       q(live, "select status from task where id=1")[0][0] == "done")
 check("其余表行数保持一致",
       all(after[k] == counts(snap)[k] for k in ("user", "notice", "work_order", "ledger", "kb_doc")))
+trigger_names = {row[0] for row in q(
+    live, "select name from sqlite_master where type='trigger' and tbl_name='audit_log'")}
+check("覆盖后审计只追加触发器已恢复",
+      {"trg_audit_log_no_update", "trg_audit_log_no_delete"} <= trigger_names,
+      trigger_names)
+delete_blocked = False
+try:
+    x(live, "delete from audit_log where id=(select min(id) from audit_log)")
+except sqlite3.IntegrityError:
+    delete_blocked = True
+check("覆盖后审计仍拒绝删除", delete_blocked)
 
 rc2 = sa.apply_snapshot(str(snap), str(live), None)
 check("重复应用被跳过（幂等）", rc2 == 0 and counts(live)["audit_log"] == after["audit_log"])

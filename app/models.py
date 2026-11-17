@@ -13,8 +13,34 @@ class FdeRecord(db.Model):
     raw_text = db.Column(db.Text, nullable=False)
     source = db.Column(db.String(16), default="text")  # text/voice/image
     creator = db.Column(db.String(32), default="")
+    capture_draft_id = db.Column(db.String(32), unique=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.now)
     items = db.relationship("WorkItem", backref="fde", lazy=True)
+
+
+class CaptureDraft(db.Model):
+    """截图识别草稿；只有人工确认后才关联正式 FDE。"""
+    __tablename__ = "capture_draft"
+    id = db.Column(db.String(32), primary_key=True)
+    creator_id = db.Column(db.Integer, index=True)
+    creator = db.Column(db.String(32), default="")
+    org = db.Column(db.String(64), default="", index=True)
+    community_hint = db.Column(db.String(64), default="")
+    source_file = db.Column(db.String(64), nullable=False)
+    source_sha256 = db.Column(db.String(64), nullable=False, index=True)
+    source_mime = db.Column(db.String(32), default="")
+    source_size = db.Column(db.Integer, default=0)
+    ocr_text = db.Column(db.Text, default="")
+    suggested_json = db.Column(db.Text, default="[]")
+    structured_json = db.Column(db.Text, default="[]")
+    analysis_source = db.Column(db.String(24), default="")  # local_llm/rules/
+    status = db.Column(db.String(16), default="needs_input", index=True)
+    expected_count = db.Column(db.Integer, default=0)
+    confirmed_fde_id = db.Column(db.Integer, db.ForeignKey("fde_record.id"))
+    created_at = db.Column(db.DateTime, default=datetime.now, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.now)
+    confirmed_at = db.Column(db.DateTime)
+    rejected_at = db.Column(db.DateTime)
 
 
 class WorkItem(db.Model):
@@ -210,8 +236,48 @@ class Task(db.Model):
     closed_at = db.Column(db.DateTime)
 
 
+class Meeting(db.Model):
+    """居委会议事主表：内部纪要与对外公开稿严格分栏存储。"""
+    __tablename__ = "meeting"
+    id = db.Column(db.Integer, primary_key=True)
+    org = db.Column(db.String(64), nullable=False, index=True)
+    kind = db.Column(db.String(24), nullable=False)  # 居务会/两委联席会/居民代表会议/议事协商
+    title = db.Column(db.String(128), nullable=False)
+    held_at = db.Column(db.DateTime, nullable=False)
+    location = db.Column(db.String(128), default="")
+    convener = db.Column(db.String(32), default="")
+    status = db.Column(db.String(16), default="draft", index=True)  # draft/notified/finalized
+    expected_count = db.Column(db.Integer, default=0)
+    present_count = db.Column(db.Integer, default=0)
+    minutes_md = db.Column(db.Text, default="")       # 内部材料，不进入居民端
+    public_summary = db.Column(db.Text, default="")   # 人工确认后的公开摘要
+    published_notice_id = db.Column(db.Integer, db.ForeignKey("notice.id"))
+    creator = db.Column(db.String(32), default="")
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    notified_at = db.Column(db.DateTime)
+    finalized_at = db.Column(db.DateTime)
+    items = db.relationship("MeetingItem", backref="meeting", lazy=True,
+                            cascade="all, delete-orphan")
+
+
+class MeetingItem(db.Model):
+    """会议议题/决议；可选转成 Task，公开标记由人工逐项确认。"""
+    __tablename__ = "meeting_item"
+    id = db.Column(db.Integer, primary_key=True)
+    meeting_id = db.Column(db.Integer, db.ForeignKey("meeting.id"), nullable=False, index=True)
+    title = db.Column(db.String(128), nullable=False)
+    detail = db.Column(db.Text, default="")
+    decision = db.Column(db.Text, default="")
+    assignee_role = db.Column(db.String(16), default="")
+    assignee_org = db.Column(db.String(64), default="")
+    deadline = db.Column(db.DateTime)
+    is_public = db.Column(db.Boolean, default=False)
+    task_id = db.Column(db.Integer, db.ForeignKey("task.id"))
+    created_at = db.Column(db.DateTime, default=datetime.now)
+
+
 class AuditLog(db.Model):
-    """审计日志（只追加）"""
+    """审计日志（应用层与 SQLite 触发器共同保证只追加）。"""
     __tablename__ = "audit_log"
     id = db.Column(db.Integer, primary_key=True)
     actor = db.Column(db.String(32))   # 操作者或 Agent 名
@@ -220,6 +286,13 @@ class AuditLog(db.Model):
     input_digest = db.Column(db.String(256))
     output_digest = db.Column(db.String(256))
     created_at = db.Column(db.DateTime, default=datetime.now)
+
+
+@event.listens_for(AuditLog, "before_update")
+@event.listens_for(AuditLog, "before_delete")
+def _audit_log_append_only(_mapper, _connection, _target):
+    """阻止 ORM 误改审计账本；直接 SQL 由启动迁移创建的触发器拦截。"""
+    raise ValueError("audit_log 是只追加账本，禁止更新或删除")
 
 
 class KbDoc(db.Model):
@@ -350,6 +423,13 @@ class ResidentTicket(db.Model):
     name = db.Column(db.String(32), default="")
     address = db.Column(db.String(128), default="")
     raw_text = db.Column(db.Text, nullable=False)
+    normalized_text = db.Column(db.Text, default="")   # 清洗后用于检索/去重的文本
+    content_hash = db.Column(db.String(64), default="", index=True)
+    quality_status = db.Column(db.String(16), default="clean")  # clean/review/duplicate
+    quality_flags = db.Column(db.Text, default="")                # JSON 标签
+    duplicate_of = db.Column(db.Integer, db.ForeignKey("resident_ticket.id"))
+    duplicate_kind = db.Column(db.String(16), default="")        # exact/similar
+    duplicate_score = db.Column(db.Float)
     fde_id = db.Column(db.Integer, db.ForeignKey("fde_record.id"))
     item_count = db.Column(db.Integer, default=0)     # 拆出几个业务项
     line_summary = db.Column(db.String(128), default="")  # 涉及业务线，如 "物业/民政"
@@ -360,6 +440,29 @@ class ResidentTicket(db.Model):
     attachments = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now)
+
+
+class ModelFeedback(db.Model):
+    """居委确认后的模型纠错样本与可复用规则候选。
+
+    一次纠错先进入样本表；同一触发词、同一修正方向累计 3 次后，
+    才允许在新诉求上自动应用，避免一次误操作改变全站分流。
+    """
+    __tablename__ = "model_feedback"
+    id = db.Column(db.Integer, primary_key=True)
+    work_item_id = db.Column(db.Integer, db.ForeignKey("work_item.id"), index=True)
+    source_type = db.Column(db.String(24), default="work_item")
+    issue_type = db.Column(db.String(24), nullable=False)  # classify/route/split/noise
+    trigger = db.Column(db.String(128), default="")       # 人工确认的触发词
+    before_json = db.Column(db.Text, default="")
+    after_json = db.Column(db.Text, default="")
+    reason = db.Column(db.String(512), default="")
+    actor = db.Column(db.String(32), default="")
+    actor_org = db.Column(db.String(64), default="")
+    status = db.Column(db.String(16), default="approved")  # approved/rejected
+    applied_count = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.now, index=True)
+    applied_at = db.Column(db.DateTime)
 
 
 class EvidenceChain(db.Model):

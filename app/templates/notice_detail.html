@@ -115,7 +115,7 @@
         <a class="btn btn-primary" style="text-decoration:none"
            href="{{ url_for('views.notice_export', nid=notice.id, fmt='docx') }}">Word 公文（红头）</a>
         <a class="btn btn-ghost" style="text-decoration:none"
-           href="{{ url_for('views.notice_export', nid=notice.id, fmt='md') }}">Markdown 归档</a>
+           href="{{ url_for('views.notice_export', nid=notice.id, fmt='md') }}">文本归档</a>
         <a class="btn btn-ghost" style="text-decoration:none"
            href="{{ url_for('views.notice_export', nid=notice.id, fmt='txt') }}">纯文本</a>
         <a class="btn btn-ghost" style="text-decoration:none" target="_blank"
@@ -124,8 +124,7 @@
            href="{{ url_for('portalviews.notice', nid=notice.id, mode='official') }}">网页发布版</a>
       </div>
       <div class="exp-note">
-        Word 件按 GB/T 9704 排：红头、文号、红色反线、三号仿宋正文、落款右对齐、页码。
-        Markdown 件带元信息头，可直接放回 <code>data/notices/</code> 重新入库。
+        可导出正式公文、文本归档或打印版。
       </div>
     </div>
 

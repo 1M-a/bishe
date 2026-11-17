@@ -101,6 +101,16 @@
       这是防止「管理员把自己锁在门外」的最后一道保险。
     </div>
     {% else %}
+    {% if u.role == 'community' %}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px">
+      <span style="font-size:12px;color:#7b8fa7;align-self:center">社区岗位模板：</span>
+      {% for key, profile in community_profiles.items() %}
+      <button class="btn btn-ghost" type="button" onclick="applyCommunityProfile('{{ key }}')">
+        {{ profile.name }}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="hintline" style="margin:0 0 14px">
       勾上「跟随角色默认」时权限随角色走；取消后可按人精调，取消勾选即为降权。
       权限保存后<strong>实时生效</strong>，对方不需要重新登录。
@@ -155,6 +165,7 @@
 <script>
 const UID = {{ u.id }};
 const ROLE_DEFAULT = {{ role_perms[u.role]|list|sort|tojson }};
+const COMMUNITY_PROFILES = {{ community_profiles|tojson }};
 const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
 
 function permsChecked() {
@@ -191,6 +202,17 @@ function pickNone() {
   document.getElementById('followRole').checked = false;
   document.querySelectorAll('.perm').forEach(x => {x.disabled=false; x.checked=false});
   refreshCount();
+}
+function applyCommunityProfile(key) {
+  const profile = COMMUNITY_PROFILES[key];
+  if (!profile) return;
+  document.getElementById('followRole').checked = false;
+  document.querySelectorAll('.perm').forEach(x => {
+    x.disabled = false;
+    x.checked = profile.perms.includes(x.value);
+  });
+  refreshCount();
+  tip('已套用“' + profile.name + '”，确认后点保存');
 }
 function tip(msg, bad) {
   const el = document.getElementById('saveTip');

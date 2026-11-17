@@ -45,6 +45,7 @@ from app.agents.knowledge import KnowledgeAgent
 from app.agents.parser import ParserAgent
 from app.agents.riskreview import RiskReviewAgent
 from app.agents.security import SecurityAgent
+from app.agents.learning import apply_rules
 
 
 def _ms(t0: float) -> int:
@@ -63,7 +64,9 @@ class Orchestrator:
     # ------------------------------------------------------------------ 主链路
 
     def handle_fde(self, raw_text: str, source: str = "text", creator: str = "",
-                   run_id: str = "", queue_timeout: float | None = None) -> dict:
+                   run_id: str = "", queue_timeout: float | None = None,
+                   approved_items: list[dict] | None = None,
+                   capture_draft_id: str = "") -> dict:
         bb = Blackboard(run_id)
 
         # ① 保密审查（先脱敏再入库/入模型，最小暴露）
@@ -78,7 +81,8 @@ class Orchestrator:
                 took_ms=_ms(t))
 
         # ② 落库原始记录（保存脱敏后文本）
-        rec = FdeRecord(raw_text=sec["masked_text"], source=source, creator=creator)
+        rec = FdeRecord(raw_text=sec["masked_text"], source=source, creator=creator,
+                        capture_draft_id=capture_draft_id or None)
         db.session.add(rec)
         # 必须在此提交，而不是 flush。
         db.session.commit()
@@ -87,13 +91,33 @@ class Orchestrator:
 
         # ③ 拆解（调模型，约 2s，必须在事务外）
         t = time.perf_counter()
-        parsed = self.parser.run({"raw_text": sec["masked_text"],
-                                  "queue_timeout": queue_timeout})
-        degraded = parsed["source"] != "llm"
+        if approved_items is None:
+            parsed = self.parser.run({"raw_text": sec["masked_text"],
+                                      "queue_timeout": queue_timeout})
+            learned = apply_rules(sec["masked_text"], parsed["items"])
+            if learned:
+                parsed.setdefault("corrections", []).extend(learned)
+        else:
+            from app.agents.base import mask_sensitive
+
+            def mask_values(value):
+                if isinstance(value, dict):
+                    return {str(k)[:64]: mask_values(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [mask_values(v) for v in value[:32]]
+                return mask_sensitive(str(value))[:500] if value is not None else ""
+
+            parsed = {"items": self.parser._normalize(mask_values(approved_items)),
+                      "source": "human_confirmed", "corrections": []}
+        degraded = parsed["source"] not in ("llm", "human_confirmed")
         bb.step("parser", "parse",
                 decision=f"拆出 {len(parsed['items'])} 个业务项",
-                reason=("模型结构化输出（SCHEMA 约束解码）" if not degraded
-                        else "模型不可用，走规则预分句降级"),
+                reason=(("居委会人工确认结构化结果，直接按确认内容入库"
+                         if parsed["source"] == "human_confirmed" else
+                         "模型结构化输出（SCHEMA 约束解码）" if not degraded else
+                         "模型不可用，走规则预分句降级")
+                        + (("；确定性校正：" + "；".join(parsed.get("corrections", [])))
+                           if parsed.get("corrections") else "")),
                 took_ms=_ms(t), degraded=degraded, fde_id=rec.id)
 
         # ④ 业务项入库 + 物业类派单 + 政务类填报
@@ -117,7 +141,8 @@ class Orchestrator:
                           "target_lines": it.get("target_lines", []),
                           "security": sec_fields,
                           "sec_max": max([sf["level"] for sf in sec_fields], default=1),
-                          "kb_hits": self._kb_lookup(wi.type, wi.subject, it.get("fields"))})
+                          "kb_hits": self._kb_lookup(wi.type, wi.subject, it.get("fields"),
+                                                     actor=creator)})
             lines = it.get("target_lines") or []
 
             # ⑤ 去向含"物业" → 定级 → 风险复核 → 消解 → 建单
@@ -218,12 +243,13 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ 知识库
 
-    def _kb_lookup(self, item_type: str, subject: str, fields: dict | None) -> list[dict]:
+    def _kb_lookup(self, item_type: str, subject: str, fields: dict | None,
+                   actor: str = "system") -> list[dict]:
         """咨询类事项去知识库找政策依据（纯检索，几毫秒，不调模型不拖慢主链路）"""
         if item_type != "咨询" or not subject:
             return []
         query = subject + " " + " ".join(str(v) for v in (fields or {}).values())
-        hits = self.knowledge.run({"query": query, "top_k": 2})["hits"]
+        hits = self.knowledge.run({"query": query, "top_k": 2, "actor": actor})["hits"]
         seen, out = set(), []
         for h in hits:                      # 同一文档的多个片段只保留最相关的一条
             if h["title"] in seen:
