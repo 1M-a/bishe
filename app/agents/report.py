@@ -16,7 +16,8 @@ from datetime import datetime
 from app.agents.base import BaseAgent
 from app.agents.supervise import SuperviseAgent
 from app.extensions import db
-from app.models import Report, WorkItem, WorkOrder, Ledger, FdeRecord, AuditLog
+from app.models import (Report, WorkItem, WorkOrder, Ledger, FdeRecord,
+                        AuditLog, ResidentTicket)
 from app.report.export import MAX_DETAIL
 from app.report.revisions import archive
 
@@ -82,6 +83,14 @@ class ReportAgent(BaseAgent):
         # 超期件数：与督办模块同一判据，避免"督办说 3 件超期、月报说 0 件"
         overdue_cnt = sum(1 for o in cur["orders"] if SuperviseAgent.is_overdue(o))
 
+        # 满意度口径：只统计**已经评星的**诉求，未评的不算（不填 0 分）。
+        # 均分 = 总星数 ÷ 评星数，否则没评的会把均分拖向 0，报表失真。
+        rated = [tk for tk in
+                 ResidentTicket.query.filter(ResidentTicket.created_at >= start,
+                                             ResidentTicket.created_at < end).all()
+                 if tk.rating and 1 <= tk.rating <= 5]
+        sat_avg = round(sum(tk.rating for tk in rated) / len(rated), 2) if rated else None
+
         # 业务项明细随报表冻结：导出 Excel 的明细页只读这份快照，
         # 不回头查库（否则导出的数字与报表当日上报的数字可能不一致）。
         # 只留非敏感字段，事项摘要本就是派发给物业的那一句。
@@ -98,6 +107,14 @@ class ReportAgent(BaseAgent):
             pct = (cur_v - prev_v) / prev_v * 100
             return f"环比{pct:+.0f}%"
 
+        # 满意度表述：有评星才算数；没数据就直说"暂无评价"，
+        # 不编一个"满意度 —"硬凑数字、也不把无评价写成像 0 分。
+        if sat_avg is not None:
+            sat_txt = (f"居民满意度均分 {sat_avg:.1f} 星 "
+                       f"（本期 {len(rated)} 条诉求已评星，含 {sum(1 for a in rated if a.rating <= 3)} 条低分）")
+        else:
+            sat_txt = "居民满意度：本期暂无评星数据"
+
         summary = (
             f"{period} 社区治理事项汇总：本期首录 {cur['fde']} 条（{delta(cur['fde'], prev['fde'])}），"
             f"拆解业务项 {len(cur['items'])} 个，覆盖 {len(line_cnt)} 条业务线；"
@@ -105,7 +122,8 @@ class ReportAgent(BaseAgent):
             + (f"，超期未办结 {overdue_cnt} 件，已列入督办" if overdue_cnt else "")
             + "）；"
             f"复用历史档案 {reuse_cnt} 次，避免重复填报；"
-            f"敏感信息脱敏处理 {sensitive_cnt} 批次，全程本地模型处理，无外网传输。"
+            f"敏感信息脱敏处理 {sensitive_cnt} 批次，全程本地模型处理，无外网传输；"
+            f"{sat_txt}。"
         )
 
         data = {
@@ -118,6 +136,9 @@ class ReportAgent(BaseAgent):
             "orders": {"total": total_orders, **dict(order_stat)},
             "overdue_count": overdue_cnt,
             "reuse_count": reuse_cnt, "sensitive_count": sensitive_cnt,
+            # 满意度快照：街道看报表时只关心"均分是否健康"，不用它看具体是谁评的。
+            "satisfaction": {"rated": len(rated), "avg": sat_avg,
+                             "low": sum(1 for a in rated if a.rating <= 3)},
             "item_rows": detail,
             "item_rows_truncated": max(0, len(cur["items"]) - MAX_DETAIL),
             "prev": {"period": prev_period, "fde_count": prev["fde"],

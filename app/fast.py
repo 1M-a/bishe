@@ -134,10 +134,13 @@ def install(app) -> None:
     # 换成 nonce 要给每个 <script> 打标记，收益是"再加一层护栏"，
     # 但真正的防线是**输出转义**（base.html 里的全局 esc），这里不重复造。
     # frame-ancestors / base-uri / object-src 三项不影响内联脚本，直接收紧。
+    # media-src 需要放行 blob:——居民端录音完成后用 objectURL 在 <audio> 里试听，
+    # 只写 'self' 会让浏览器按 default-src 拦截 blob 播放，等于录完听不了。
     _CSP = ("default-src 'self'; img-src 'self' data:; font-src 'self' data:; "
-            "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-            "connect-src 'self'; form-action 'self'; base-uri 'self'; "
-            "frame-ancestors 'none'; object-src 'none'")
+            "media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
+            "form-action 'self'; base-uri 'self'; frame-ancestors 'none'; "
+            "object-src 'none'")
 
     @app.after_request
     def _secure_headers(resp):                       # noqa: ANN001
@@ -145,7 +148,16 @@ def install(app) -> None:
         h.setdefault("X-Content-Type-Options", "nosniff")
         h.setdefault("X-Frame-Options", "DENY")
         h.setdefault("Referrer-Policy", "same-origin")
-        h.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        # Permissions-Policy 默认全禁会连自己都锁死：居民端 /portal/report
+        # 靠 getUserMedia 录音，microphone=() 表示"任何来源都不能用麦克风"，
+        # 浏览器会在权限层直接拒绝，前端状态机写得再对也进不了录音。
+        # 只在居民端上报页放行 self（跨源 iframe 仍禁），其余页面维持全禁。
+        if request.path == "/portal/report":
+            h.setdefault("Permissions-Policy",
+                         "geolocation=(), camera=(), microphone=(self)")
+        else:
+            h.setdefault("Permissions-Policy",
+                         "geolocation=(), microphone=(), camera=()")
         h.setdefault("Content-Security-Policy", _CSP)
         # Server 头不在这里写：开发服务器会再追一条自己的，两条并存等于白改。
         # 详见 app/fast.py 末尾 `_HardenedWSGI` 与 run.py 的 request_handler。

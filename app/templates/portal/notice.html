@@ -19,11 +19,22 @@
 .out-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
 .out-bar .p-btn-line { flex: 1; text-align: center; }
 .out-bar .primary { background: var(--brand); color: #fff; }
+.p-readbar { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
+.p-readbar .st { font-size: 13px; color: var(--ink-3); }
+.p-readbar button { font: 13px/1 var(--fw); padding: 7px 14px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--brand); cursor: pointer; }
+.p-readbar button:hover { border-color: var(--brand); }
+.p-readbar[hidden] { display: none; }
 </style>
 {% endblock %}
 {% block body %}
 
 <div class="p-card">
+  <div class="p-readbar" id="readbar" hidden>
+    <span class="st" id="readState">正在朗读</span>
+    <button type="button" id="readToggle">暂停</button>
+    <button type="button" id="readStop">停止</button>
+  </div>
+
   <div class="doc-head">
     <h1>{{ notice.title }}</h1>
     <div class="doc-meta">
@@ -49,6 +60,45 @@
   </div>
 </div>
 
-<a class="p-btn-line" href="{{ url_for('portalviews.notices') }}">← 返回公告列表</a>
+<a class="p-btn-line" href="{{ url_for('portalviews.home') }}">← 返回首页</a>
 
+{% endblock %}
+{% block script %}
+<script>
+/* 关怀模式：网页版详情在开启关怀时朗读「标题 + 全文」。
+ * 控制条（暂停/继续/停止）只在关怀开启时出现，状态由 xfCare.speak
+ * 的生命周期回调驱动，朗读结束自动收起。 */
+document.addEventListener('DOMContentLoaded', function () {
+  if (!window.xfCare || !window.xfCare.isOn()) return;
+  var bar = document.getElementById('readbar');
+  var st = document.getElementById('readState');
+  var toggle = document.getElementById('readToggle');
+  var stop = document.getElementById('readStop');
+  var titleEl = document.querySelector('.doc-head h1');
+  var bodyEl = document.querySelector('.doc-body');
+  if (!bar || !bodyEl) return;
+  var text = (titleEl ? titleEl.textContent : '') + '，' + bodyEl.textContent;
+  var opts = {
+    rate: 0.95,
+    onStart: function () {
+      bar.hidden = false;
+      st.textContent = '正在朗读';
+      toggle.textContent = '暂停';
+    },
+    onPause: function () { st.textContent = '已暂停'; toggle.textContent = '继续'; },
+    onResume: function () { st.textContent = '正在朗读'; toggle.textContent = '暂停'; },
+    onEnd: function () { bar.hidden = true; }
+  };
+  if (toggle) toggle.addEventListener('click', function () {
+    var s = window.xfCare.togglePause();
+    if (s === 'paused') { st.textContent = '已暂停'; toggle.textContent = '继续'; }
+    else if (s === 'speaking') { st.textContent = '正在朗读'; toggle.textContent = '暂停'; }
+  });
+  if (stop) stop.addEventListener('click', function () {
+    window.xfCare.stop();
+    bar.hidden = true;
+  });
+  window.xfCare.speak(text, opts);
+});
+</script>
 {% endblock %}

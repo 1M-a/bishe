@@ -18,9 +18,20 @@
   <h2><span class="bar"></span>解决了吗</h2>
   <p class="p-muted" style="margin-top:0">如未解决，居委会会介入核实。</p>
   <div style="display:flex;gap:10px">
-    <button class="p-btn" style="flex:1" onclick="doConfirm(true)">已解决</button>
+    <button class="p-btn" style="flex:1" onclick="showRate(true)">已解决</button>
     <button class="p-btn" style="flex:1;background:#fff;color:#b03131;border:1px solid #f0c2bd"
             onclick="showDispute()">没解决</button>
+  </div>
+  <div id="rateBox" style="display:none;margin-top:14px;border-top:1px dashed #e3e8f0;padding-top:12px">
+    <div class="p-field">
+      <label>给这次办理打个分 <span class="hint">1–5 星</span></label>
+      <div id="stars" style="display:flex;gap:6px;margin-top:6px" role="radiogroup" aria-label="满意度评分"></div>
+    </div>
+    <div class="p-field">
+      <label for="rnote">想说的话 <span class="hint">选填</span></label>
+      <textarea id="rnote" placeholder="例：修得很及时，师傅态度也好。"></textarea>
+    </div>
+    <button class="p-btn" onclick="doConfirm(true)">提交评分</button>
   </div>
   <div id="disputeBox" style="display:none;margin-top:14px;border-top:1px dashed #e3e8f0;padding-top:12px">
     <div class="p-field">
@@ -33,6 +44,11 @@
     </div>
     <button class="p-btn" onclick="doConfirm(false)">提交给居委会</button>
   </div>
+</div>
+{% elif view['rating'] %}
+<div class="p-card">
+  <h2><span class="bar"></span>满意度评价</h2>
+  <p class="p-muted" style="margin-top:0">{{ view['rating'] }}/5 星{% if view['rating_comment'] %} · {{ view['rating_comment'] }}{% endif %}</p>
 </div>
 {% endif %}
 
@@ -97,6 +113,7 @@
   var TID = {{ ticket.id }};
   var DTYPES = {{ view['dispute_types']|tojson }};
   var PICKED = '';
+  var STAR = 0;
 
   var box = document.getElementById('dtags');
   if (box) {
@@ -120,18 +137,51 @@
     if (d) { d.style.display = ''; document.getElementById('dnote').focus(); }
   };
 
+  /* 满意度星控：1–5 星，点一下设置，再点同一颗可取消。
+     用文本星而不是图片，避免多一次网络加载，关怀模式下字号也能跟着放大。 */
+  var starBox = document.getElementById('stars');
+  function renderStars() {
+    if (!starBox) return;
+    starBox.innerHTML = Array.from({length: 5}, function (_, i) {
+      return '<span data-v="' + (i + 1) + '" aria-label="' + (i + 1) + ' 星" role="radio"'
+           + ' style="font-size:28px;line-height:1;cursor:pointer;color:' + (i < STAR ? '#f59e0b' : '#d5dce8') + '">★</span>';
+    }).join('');
+    starBox.querySelectorAll('[data-v]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var v = parseInt(el.getAttribute('data-v'), 10);
+        STAR = (STAR === v) ? 0 : v;   // 点同一颗取消评分
+        renderStars();
+      });
+    });
+  }
+  renderStars();
+
+  window.showRate = function () {
+    var d = document.getElementById('rateBox');
+    if (d) { d.style.display = ''; document.getElementById('rnote').focus(); }
+  };
+
   window.doConfirm = async function (isOk) {
     var note = '';
+    var payload = {ok: isOk};
     if (!isOk) {
       note = (document.getElementById('dnote').value || '').trim();
       if (note.length < 4) { alert('请说明哪里没解决（至少 4 个字）'); return; }
       if (!confirm('提交后居委会会介入核实，确认提交？')) return;
+      payload.note = note;
+      payload.dispute_type = PICKED;
+    } else {
+      // 满意度只在确认解决时收集：没选星就默认跳过评分，
+      // 但提示一下——主要是让试用者知道这里可以打分。
+      if (STAR === 0) { alert('给个星级吧，方便我们改进服务（可不评）'); return; }
+      payload.rating = STAR;
+      payload.rating_comment = (document.getElementById('rnote').value || '').trim();
     }
     try {
       var j = await api('/api/portal/ticket/' + TID + '/confirm', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ok: isOk, note: note, dispute_type: PICKED})
+        body: JSON.stringify(payload)
       });
       if (j.code !== 0) { alert(j.msg || '提交失败'); return; }
       alert((j.data && j.data.msg) || '已提交');

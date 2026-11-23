@@ -1,5 +1,5 @@
 """页面视图：登录 / 登出 + 5 个业务页面（全部挂权限守卫）"""
-from flask import Blueprint, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, redirect, render_template, request, url_for
 
 from app.params import safe_back
 from app.auth import (DEMO_USERS, PERMS, ROLE_HOME, AccountDisabled,
@@ -13,13 +13,15 @@ bp = Blueprint("views", __name__)
 
 
 def _login_page(**kw):
-    """登录页统一入口
-
-    演示账号卡片上的姓名和单位**从 DEMO_USERS 取**，不在模板里写死。
-    之前写死过一次，改了账号单位之后页面还显示旧名字，同一个人两个单位，
-    演示时一眼就被看出来。
+    """登录页统一入口（两模式共用同一份模板）：
+    - 演示模式（RESIDENT_AUTH=0）：读 DEMO_USERS，渲染"演示账号 · 点击自动填入"卡片，
+      方便现场演示点一下就进；
+    - 登录模式（RESIDENT_AUTH=1，试用版/调整版）：不预置演示账号，只有登录表单 +
+      注册入口，demo_users 传空列表，模板里的演示卡片区块整体不渲染。
     """
-    return render_template("login.html", demo_users=DEMO_USERS, **kw)
+    auth_on = bool(current_app.config.get("RESIDENT_AUTH"))
+    return render_template("login.html",
+                           demo_users=([] if auth_on else DEMO_USERS), **kw)
 
 
 @bp.route("/login", methods=["GET", "POST"])

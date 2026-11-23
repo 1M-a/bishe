@@ -211,7 +211,9 @@ def mask_payload(text: str, limit: int = 500) -> str:
 # ------------------------------------------------------------------ 附件
 
 MAX_PHOTO_BYTES = 5 * 1024 * 1024      # 单张 5MB：手机直出照片一般 2-4MB
-MAX_PHOTOS = 5                         # 一次最多 5 张，够说明"哪面墙堆了什么"
+MAX_PHOTOS = 10                        # 一次最多 10 张（2026-11-21 用户拍板）
+MAX_AUDIO_BYTES = 15 * 1024 * 1024     # 单条语音 ≤15MB：5 分钟高采样一般 2-6MB
+MAX_AUDIO_SECONDS = 300                # 语音单条 ≤5 分钟
 
 # **只看扩展名是不够的**：把 .php 改名成 .jpg 一样能过扩展名检查，
 # 而在某些部署方式下（比如有人手工配了静态目录直出）它会被当脚本执行。
@@ -233,6 +235,49 @@ def sniff(data: bytes):
     if len(data) >= 12 and data[0:4] == _WEBP_HEAD and data[8:12] == _WEBP_MARK:
         return "image/webp", ".webp"
     return None, None
+
+
+# 音频白名单：居民端 MediaRecorder 默认录 webm（Chrome/Edge），
+# 兼容 wav / m4a 以便演示环境手录导入。同样按文件头认，不认扩展名。
+_AUDIO_MAGIC = (
+    (b"\x1a\x45\xdf\xa3", "audio/webm", ".webm"),        # EBML 容器（webm 通用头）
+    (b"RIFF", "audio/wav", ".wav"),                       # RIFF/WAVE
+    (b"\x00\x00\x00\x18ftypM4A", "audio/mp4", ".m4a"),  # MP4/M4A
+)
+
+
+def sniff_audio(data: bytes):
+    """按内容判断音频类型，返回 (mime, ext) 或 (None, None)"""
+    for head, mime, ext in _AUDIO_MAGIC:
+        if len(data) >= len(head) and data[:len(head)] == head:
+            return mime, ext
+    return None, None
+
+
+def audio_files_to_seconds(files) -> float:
+    """估算一次录音的时长（秒）：width 位深度 x channel x sample_rate 都在文件头里。
+
+    WAV 头解析最稳；webm/m4a 是容器没有简单头，这里返回 0 表示“无法从文件头估算”，
+    由上传者在前端把真实录制时长随表单一并提交，后端用 MAX_AUDIO_SECONDS 兜底复核。
+    """
+    for f in (files or []):
+        if not f or not getattr(f, "filename", ""):
+            continue
+        raw = f.read()
+        f.seek(0)
+        if raw[:4] == b"RIFF" and len(raw) >= 44:
+            try:
+                # fmt 子块：audio_format / channels / sample_rate / byte_rate / block_align / bits
+                sample_rate = int.from_bytes(raw[24:28], "little")
+                byte_rate = int.from_bytes(raw[28:32], "little")
+                data_size = int.from_bytes(raw[40:44], "little") or (len(raw) - 44)
+                if byte_rate:
+                    return data_size / byte_rate
+                if sample_rate:
+                    return len(raw) / sample_rate
+            except (IndexError, ValueError):
+                pass
+    return 0.0
 
 
 def save_photos(files, upload_dir):
@@ -282,6 +327,49 @@ def save_photos(files, upload_dir):
             "size": len(raw),
             "mime": mime,
             "stored": stored,
+        })
+    return saved, errors
+
+
+def save_audio(files, upload_dir):
+    """保存居民上传的语音，返回 (saved, errors)
+
+    saved 里每项 {name, sha256, size, mime, stored, type: "audio"}：
+      · `type: "audio"` 让 attachments 的 JSON 里能区分照片和语音——
+        渲染、补传 room 计算都只看照片，语音不占照片配额；
+      · 存盘目录固定 data/evidence/audio/（与图片分开放，便于演示与清理）。
+    """
+    import os
+    import uuid
+
+    saved, errors = [], []
+    files = [f for f in (files or []) if f and getattr(f, "filename", "")]
+    if not files:
+        return saved, errors
+    audio_dir = os.path.join(upload_dir, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    for f in files:
+        raw = f.read()
+        if not raw:
+            errors.append("语音文件为空")
+            continue
+        if len(raw) > MAX_AUDIO_BYTES:
+            errors.append("语音超过 15MB，请控制在 5 分钟以内")
+            continue
+        mime, ext = sniff_audio(raw)
+        if not mime:
+            errors.append("不是支持的语音格式（只接受 WEBM / WAV / M4A）")
+            continue
+        stored = uuid.uuid4().hex + ext
+        with open(os.path.join(audio_dir, stored), "wb") as fh:
+            fh.write(raw)
+        saved.append({
+            "name": (f.filename or "")[:64],
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(raw),
+            "mime": mime,
+            "stored": "audio/" + stored,
+            "type": "audio",
         })
     return saved, errors
 

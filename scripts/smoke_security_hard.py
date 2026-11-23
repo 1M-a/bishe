@@ -38,7 +38,7 @@ from app import create_app                                     # noqa: E402
 from app import auth as auth_mod                               # noqa: E402
 from app import ratelimit                                      # noqa: E402
 from app.extensions import db                                  # noqa: E402
-from app.models import (AuditLog, Notice, Report,              # noqa: E402
+from app.models import (AuditLog, InviteCode, Notice, Report,  # noqa: E402
                         ResidentTicket, User)
 from sqlalchemy import text                                   # noqa: E402
 
@@ -233,14 +233,20 @@ print("=" * 66)
 with app.test_client() as c:
     made, codes = 0, []
     for i in range(8):
-        before = 0
+        # 邀请码注册机制：每轮种一个未用过的码，校验"限流"而非"码被占用"
+        with app.app_context():
+            inv = InviteCode(code=f"SMK{i:03d}", role="community",
+                             org="某社区", site=app.config["SITE_CODE"])
+            db.session.add(inv)
+            db.session.commit()
         r = c.post("/register", data={"username": f"bulk{i}", "name": f"批量{i}",
                                       "org": "某社区", "phone": "13800000000",
+                                      "invite_code": f"SMK{i:03d}",
                                       "password": "Passw0rd!", "password2": "Passw0rd!"})
         codes.append(r.status_code)
         c.get("/logout")
     with app.app_context():
-        made = User.query.filter(User.created_by == "自助注册").count()
+        made = User.query.filter(User.username.like("bulk%")).count()
     check("连续注册被限流（不是无限灌库）", made < 8, f"建了 {made} 个，码 {codes}")
     check("限流后返回 429", 429 in codes, codes)
     check("限流前后都在正常建号（前几次成功）", made >= 3, made)

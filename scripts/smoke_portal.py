@@ -30,11 +30,14 @@ os.environ["NOTICE_AUTO_IMPORT"] = "1"
 
 from app import create_app            # noqa: E402
 from app.extensions import db         # noqa: E402
-from app.models import Notice, ResidentTicket, WorkOrder  # noqa: E402
+from app.models import InviteCode, Notice, ResidentTicket, WorkOrder  # noqa: E402
 from app import ratelimit
 from app.api import portal as portal_api                   # noqa: E402
 
 app = create_app("dev")
+# RESIDENT_AUTH=1：居民端走邀请码注册＋登录，脚本先登记一个演示居民账号。
+# 各段断言按 AUTH 分支：演示模式"手机号+查询码"、登录模式"账号绑定手机号"。
+AUTH = bool(app.config.get("RESIDENT_AUTH"))
 PASS = FAIL = 0
 FAILED = []
 
@@ -55,6 +58,29 @@ def login(c, u, p="123456"):
                   follow_redirects=False)
 
 
+RESIDENT_USER = "smoke_res"
+RESIDENT_PWD = "Smoke1234"
+RESIDENT_PHONE = "13800001111"
+
+
+def prepare_resident(c):
+    """RESIDENT_AUTH=1：种一个居民邀请码并注册登录，返回已登录的 client。"""
+    with app.app_context():
+        cfg = app.config.get("ORG_NAMES", {})
+        org = cfg.get("community", "幸福里社区居民委员会")
+        if not InviteCode.query.filter_by(code="A-SMOKE-RES").first():
+            db.session.add(InviteCode(
+                code="A-SMOKE-RES", role="resident", org=org,
+                site=app.config["SITE_CODE"]))
+            db.session.commit()
+    r = c.post("/register", data={
+        "username": RESIDENT_USER, "name": "王阿姨", "phone": RESIDENT_PHONE,
+        "invite_code": "A-SMOKE-RES", "org": org,
+        "password": RESIDENT_PWD, "password2": RESIDENT_PWD},
+        follow_redirects=False)
+    return r
+
+
 def main():
     c = app.test_client()
     ratelimit.reset()
@@ -63,19 +89,46 @@ def main():
     for path in ["/portal", "/portal/report", "/portal/query",
                  "/portal/notices", "/portal/contacts"]:
         r = c.get(path)
-        check(f"GET {path} = 200", r.status_code == 200, r.status_code)
+        if AUTH:
+            # 登录门禁：未登录一律重定向到登录页
+            check(f"未登录 GET {path} → 302", r.status_code == 302, r.status_code)
+        else:
+            check(f"GET {path} = 200", r.status_code == 200, r.status_code)
+    if AUTH:
+        rr = prepare_resident(c)
+        check("居民邀请码注册即登录（302 进居民端）",
+              rr.status_code == 302 and "/portal" in (rr.headers.get("Location") or ""),
+              rr.status_code)
+        with app.app_context():
+            from app.models import User
+            u = User.query.filter_by(username=RESIDENT_USER).first()
+            check("注册即 active（免审核可直接登录）",
+                  u is not None and u.status == "active" and u.role == "resident",
+                  f"status={u.status if u else None}")
+        r = c.get("/portal")
+        check("注册后必须已登录（不再重定向）", r.status_code == 200, r.status_code)
     r = c.get("/portal")
     html = r.get_data(as_text=True)
     check("首页含工作人员入口", "工作人员入口" in html)
     check("居民导航不再显示我的", ">我的</a>" not in html)
     check("匿名首页不显示他人诉求或查询码", "最近办理进度" not in html and "查询码" not in html)
+    check("首页有通知公告卡入口", "通知公告" in html and "/portal/notice/" in html)
+    check("底部导航不加通告按钮", "📢" not in html and html.count("/portal/notices") == 0)
     check("已下线 /portal/my", c.get("/portal/my").status_code == 404)
     check("已下线 /api/portal/my", c.get("/api/portal/my").status_code == 404)
     check("首页引用独立样式 portal.css", "portal.css" in html)
     check("首页不引用内部端 style.css", "css/style.css" not in html)
 
     r = c.get("/login")
-    check("登录页含居民入口", "我是居民" in r.get_data(as_text=True))
+    if AUTH:
+        # 已登录访问登录页 → 重定向（门禁）；登录页入口用匿名 client 验证
+        check("已登录访问登录页 → 重定向", r.status_code in (302, 303),
+              r.status_code)
+        anon = app.test_client()
+        check("登录页含居民入口",
+              "我是居民" in anon.get("/login").get_data(as_text=True))
+    else:
+        check("登录页含居民入口", "我是居民" in r.get_data(as_text=True))
     report_html = c.get("/portal/report").get_data(as_text=True)
     check("身份字段支持系统自动填充", 'autocomplete="tel"' in report_html and
           'autocomplete="name"' in report_html and 'autocomplete="street-address"' in report_html)
@@ -114,6 +167,8 @@ def main():
     check("网页版 200", r.status_code == 200)
     body = r.get_data(as_text=True)
     check("网页版含发布版/打印版入口", "发布版" in body and "打印版" in body)
+    check("详情页返回首页而非公告列表",
+          "返回首页" in body and "/portal/notices" not in body)
 
     r = c.get(f"/portal/notice/{nid}?mode=official")
     off = r.get_data(as_text=True)
@@ -134,6 +189,13 @@ def main():
     check("待确认公告居民端 404", r.status_code == 404, r.status_code)
     r = c.get(f"/portal/notice/{nid}?mode=xxx")
     check("非法 mode 回落网页版", r.status_code == 200)
+
+    # 首页通知公告卡：这些都已发布（本环节刚 publish），首页必须能看到标题，
+    # 且不显示草稿标题——防"入口在但首页列表空/漏发布"的锁死。
+    home2 = c.get("/portal").get_data(as_text=True)
+    check("首页渲染已发布公告标题", "消防安全" in home2 or "居民" in home2 or "生活垃圾" in home2,
+          home2[:80])
+    check("首页不渲染待确认公告", "申请增补" not in home2)
 
     print("\n[4] 居民填报 → 查询码 → 查进度")
     ratelimit.reset()
@@ -212,24 +274,45 @@ def main():
     check("超过 SLA 的诉求显示红灯", overdue_payload["traffic_light"] == "red",
           overdue_payload["traffic_light"])
 
-    # 换设备：没有本地会话时，凭手机号 + 查询码找回后要能进同一页
+    # 换设备：演示模式无会话时凭手机号+查询码找回；登录模式先登录同一账号
     c2 = app.test_client()
+    if AUTH:
+        login(c2, RESIDENT_USER, RESIDENT_PWD)
     r = c2.get(f"/api/portal/ticket?phone=13800001111&code={code}")
     check("新设备凭码查询成功", r.get_json()["code"] == 0)
     r = c2.get(f"/portal/ticket/{tid}")
     check("新设备能打开进度页", r.status_code == 200, r.status_code)
 
-    # 没凭据不该看到别人的单子
+    # 没凭据不该看到别人的单子（登录模式未登录 → 重定向登录页）
     c3 = app.test_client()
     r = c3.get(f"/portal/ticket/{tid}")
-    check("无会话直接访问进度页被拒", r.status_code == 404, r.status_code)
+    check("无会话直接访问进度页被拒",
+          r.status_code == (302 if AUTH else 404), r.status_code)
 
-    r = c.get("/api/portal/ticket?phone=13800001111&code=000000")
+    r = c.get(f"/api/portal/ticket?phone=13800001111&code=000000")
     check("错误查询码被拒", r.get_json()["code"] != 0)
-    r = c.get("/api/portal/ticket?phone=13900000000&code=" + code)
-    check("手机号与码不匹配被拒", r.get_json()["code"] != 0)
-    r = c.post("/api/portal/report", json={"text": "灯坏了需要修", "phone": "123"})
-    check("手机号格式校验", r.get_json()["code"] != 0)
+    if AUTH:
+        # 登录模式手机号以账号为准：请求里传别的手机号不生效，仍查本人
+        r = c.get(f"/api/portal/ticket?phone=13900000000&code=" + code)
+        j = r.get_json()
+        check("登录模式手机号以账号为准（传错手机号仍查到本人）",
+              j["code"] == 0 and j["data"]["phone"] == "138****1111", j.get("msg"))
+        # 登录模式提交手机号不可自由填写：请求里带非法手机号也会被账号覆盖
+        r = c.post("/api/portal/report", json={
+            "text": "灯坏了需要修", "phone": "123", "name": "王阿姨"})
+        jj = r.get_json()
+        get_ok = jj["code"] == 0 and "ticket_id" in (jj.get("data") or {})
+        if get_ok:
+            r2 = c.get(f"/api/portal/ticket?phone=123&code={jj['data']['code']}")
+            q = r2.get_json()
+            get_ok = q["code"] == 0 and q["data"]["phone"] == "138****1111"
+        check("登录模式提交不接收自由手机号（以账号为准）",
+              get_ok, jj.get("msg") or r.get_json().get("msg"))
+    else:
+        r = c.get(f"/api/portal/ticket?phone=13900000000&code=" + code)
+        check("手机号与码不匹配被拒", r.get_json()["code"] != 0)
+        r = c.post("/api/portal/report", json={"text": "灯坏了需要修", "phone": "123"})
+        check("手机号格式校验", r.get_json()["code"] != 0)
     r = c.post("/api/portal/report", json={"text": "灯坏", "phone": "13800001111"})
     check("内容过短校验", r.get_json()["code"] != 0)
 
@@ -312,6 +395,131 @@ def main():
         o = WorkOrder.query.first()
         check("工单内容为脱敏摘要", o is not None and "13800001111" not in (o.content or ""),
               o.content if o else "")
+
+    print("\n[11] 滚动预警条正交性（P1-5）")
+    from datetime import datetime as _dt
+    ids = []
+    with app.app_context():
+        # ①普通 ②置顶 ③预警 ④置顶+预警：四者均为「已发布 + scope=all」，可被居民端看到
+        def _mk(title, pinned, is_alert, dow=1):
+            n = Notice(
+                title=title, scope="all", category="通知公告", level="街道",
+                issuer="幸福里街道办事处", status="published", kind="superior",
+                source_file="", source_hash=f"smoke-alert-{title}", pinned=pinned,
+                pinned_at=_dt(2026, 11, dow) if pinned else None,
+                is_alert=bool(is_alert),
+                published_at=_dt(2026, 11, dow + 3),
+                summary=f"[探测] {title} 摘要", body_md=f"# {title}\n正文占位。")
+            db.session.add(n)
+            db.session.flush()
+            ids.append(n.id)
+        _mk("测试公告一（普通）", False, False)
+        _mk("测试公告二（置顶）", True, False)
+        _mk("测试公告三（预警）", False, True)
+        _mk("测试公告四（置顶+预警）", True, True, dow=2)
+        db.session.commit()
+    with app.app_context():
+        # 只有 ③④ 进首页滚动条，①② 不进
+        r = c.get("/portal")
+        html = r.get_data(as_text=True)
+        check("首页渲染滚动条（有预警时）", 'class="p-alert"' in html)
+        check("预警公告进滚动条（③④）",
+              "[探测] 测试公告三（预警） 摘要" in html and
+              "[探测] 测试公告四（置顶+预警） 摘要" in html)
+        check("普通公告不进滚动条（①）", "[探测] 测试公告一（普通） 摘要" not in html)
+        check("置顶公告不进滚动条（②）", "[探测] 测试公告二（置顶） 摘要" not in html)
+        # 列表：②④ 排最前且带置顶标签；③ 按时间排、不带置顶标签
+        r = c.get("/portal/notices")
+        html = r.get_data(as_text=True)
+        i1, i2, i3, i4 = (html.index(t) for t in (
+            "测试公告一（普通）", "测试公告二（置顶）",
+            "测试公告三（预警）", "测试公告四（置顶+预警）"))
+        check("置顶公告排最前（②④ 先于 ①③）", max(i2, i4) < min(i1, i3),
+              f"{i1},{i2},{i3},{i4}")
+        check("后置顶的排更前（④先于②）", i4 < i2, f"{i2},{i4}")
+        import re
+        def _has_pin(html, mark):
+            return bool(re.search(
+                r">测试公告" + re.escape(mark) + r"</span>\s*"
+                r"<span class=\"tag tag-pin\">置顶", html))
+        check("置顶公告带置顶标签（②④）",
+              _has_pin(html, "二（置顶）") and _has_pin(html, "四（置顶+预警）"))
+        check("预警未置顶不带标签（③）", not _has_pin(html, "三（预警）"))
+        # 点击滚动条/列表项均进网页版详情，且详情可切打印/发布版
+        n4 = db.session.get(Notice, ids[3])
+        href_ok = (f'"/portal/notice/{n4.id}"' in html and
+                   f"/portal/notice/{n4.id}" in c.get("/portal").get_data(as_text=True))
+        check("滚动条与列表均指向网页版详情", href_ok)
+        r = c.get(f"/portal/notice/{n4.id}")
+        dhtml = r.get_data(as_text=True)
+        check("详情页可切打印版/发布版", "打印版" in dhtml and "发布版" in dhtml)
+        # 草稿/未发布的预警绝不外泄：造一条 pending 预警
+        n5 = Notice(title="测试公告五（预警草稿）", scope="all", category="通知公告",
+                    level="街道", issuer="幸福里街道办事处", status="pending",
+                    kind="superior", source_file="", source_hash="smoke-alert-pending",
+                    is_alert=True, body_md="# 草稿预警\n不应外泄。",
+                    summary="[探测] 草稿预警摘要")
+        db.session.add(n5)
+        db.session.commit()
+        n5_id = n5.id
+        r = c.get("/portal")
+        html = r.get_data(as_text=True)
+        check("草稿预警不进首页滚动条", "[探测] 草稿预警摘要" not in html)
+        r = c.get("/portal/notices")
+        check("草稿预警不进公告列表", "测试公告五（预警草稿）" not in r.get_data(as_text=True))
+        r = c.get(f"/portal/notice/{n5_id}")
+        check("草稿预警拼 URL 也 404", r.status_code == 404)
+        # 删掉预警后首页无滚动元素
+        for n in db.session.query(Notice).filter(Notice.id.in_(ids)).all():
+            n.is_alert = False
+        db.session.query(Notice).filter(Notice.id == n5_id).delete()
+        db.session.commit()
+    with app.app_context():
+        r = c.get("/portal")
+        html = r.get_data(as_text=True)
+        check("无预警时首页不渲染滚动条", 'class="p-alert"' not in html)
+
+    print("\n[12] 关怀模式朗读链路（P0-2）")
+    home_html = c.get("/portal").get_data(as_text=True)
+    check("页头有关怀开关按钮", 'id="careToggle"' in home_html and "关怀" in home_html)
+    check("xfCare 对象已定义并暴露 speak",
+          "window.xfCare = {" in home_html and "speak: function" in home_html)
+    care_src = home_html[home_html.index("window.xfCare"):home_html.index("window.xfCare.apply()")]
+    for guard in ("if (!this.isOn()) return false;",
+                  "if (!window.speechSynthesis) return false;",
+                  "if (window.speechSynthesis.speaking) return false;",
+                  "if (!text || !text.trim()) return false;"):
+        name = " ".join(guard.split()[0:8]).rstrip(';')
+        check(f"speak 内置守卫：{name}", guard in care_src)
+    check("开关状态存 localStorage 键 xf_care", "'xf_care'" in home_html)
+    check("speak 等待语音列表就绪(voiceschanged)",
+          "getVoices" in care_src and "voiceschanged" in care_src
+          and "setTimeout" in care_src)
+    # 网页版详情：开启关怀时朗读「标题 + .doc-body 全文」，并提供暂停/继续/停止控制条
+    r = c.get(f"/portal/notice/{nid}")
+    dhtml = r.get_data(as_text=True)
+    check("网页版详情开关怀朗读正文", "xfCare.speak" in dhtml and ".doc-body" in dhtml)
+    check("网页版朗读包含公告标题", "doc-head h1" in dhtml)
+    check("网页版朗读提供暂停/停止控制条",
+          'id="readToggle"' in dhtml and 'id="readStop"' in dhtml
+          and "togglePause" in dhtml and "readbar" in dhtml)
+    # 发布版/打印版：读 localStorage 键同步决定是否朗读
+    off = c.get(f"/portal/notice/{nid}?mode=official").get_data(as_text=True)
+    pr = c.get(f"/portal/notice/{nid}?mode=print").get_data(as_text=True)
+    check("发布版开关怀朗读正文（同键）",
+          "xf_care" in off and "speechSynthesis" in off
+          and "voiceschanged" in off and "getVoices" in off)
+    check("打印版开关怀朗读正文（同键）",
+          "xf_care" in pr and "speechSynthesis" in pr
+          and "voiceschanged" in pr and "getVoices" in pr)
+    check("发布版朗读含标题与控制条", "doc-title" in off and 'id="readlineToggle"' in off)
+    check("打印版朗读含标题与控制条", "doc-title" in pr and 'id="readlineStop"' in pr)
+    import os
+    css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "app", "static", "css", "portal.css")
+    css = open(css_path, encoding="utf-8").read()
+    check("关怀字号放大样式 body.care 联动", "body.care" in css and
+          ".p-care.on" in css and "body.care .doc-body" in css)
 
     print(f"\n{'=' * 56}")
     print(f"通过 {PASS} / {PASS + FAIL}")

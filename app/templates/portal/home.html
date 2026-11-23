@@ -1,6 +1,18 @@
 {% extends "portal/base.html" %}
 {% block body %}
 
+{% if alerts %}
+<a class="p-alert" href="{{ url_for('portalviews.notice', nid=alerts[0].id) }}" role="alert" aria-live="polite">
+  <span class="p-alert-ico">⚠️</span>
+  <span class="p-alert-ticker"><span class="p-alert-track{% if alerts|length > 1 %} roll{% endif %}">
+    {% for n in alerts %}<span class="p-alert-item">{{ n.summary or n.title }}</span>{% endfor %}
+    {# 双份副本首尾相连，CSS 位移 -50% 即成无缝循环，单条时不滚动 #}
+    {% if alerts|length > 1 %}{% for n in alerts %}<span class="p-alert-item">{{ n.summary or n.title }}</span>{% endfor %}{% endif %}
+  </span></span>
+  <span class="p-alert-arrow">›</span>
+</a>
+{% endif %}
+
 <a class="p-cta" href="{{ url_for('portalviews.report') }}">
   <span class="ico">📝</span>
   <span class="t">我要反映问题</span>
@@ -23,4 +35,44 @@
   {% endif %}
 </div>
 
+<div class="p-card p-notices">
+  <h2><span class="bar"></span>通知公告</h2>
+  {% if latest_notices %}
+  <div class="p-list">
+    {% for n in latest_notices %}
+    <a class="p-item" href="{{ url_for('portalviews.notice', nid=n.id) }}">
+      <div class="top">
+        <span class="ttl">{{ n.title }}{% if n.pinned %}<span class="tag tag-pin">置顶</span>{% endif %}</span>
+      </div>
+      <div class="meta">{{ n.issuer }} · {{ (n.issued_at or n.published_at).strftime('%Y-%m-%d') if (n.issued_at or n.published_at) else '' }}</div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="p-muted">暂时没有公告。</p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block script %}
+<script>
+(function () {
+  // 关怀模式 + 首页有滚动预警 → 循环朗读预警文本。
+  // 完全复用 base.html 的 window.xfCare.speak()，不另起 speechSynthesis：
+  // speak 内部已判「未开启 / 浏览器不支持 / 正在朗读 / 空文本」→ 静默返回，
+  // 非关怀模式一律不朗读（设计如此）；读到一半切到详情页会让位于详情朗读。
+  var items = Array.prototype.map.call(
+    document.querySelectorAll('.p-alert-item'),
+    function (el) { return String(el.textContent || '').trim(); }
+  ).filter(Boolean);
+  if (!items.length || !window.xfCare) return;
+  var text = '社区预警：' + items.join('。') + '。';
+  function speakLoop() {
+    window.xfCare.speak(text, { rate: 0.95 });
+  }
+  speakLoop();
+  setInterval(speakLoop, 60000);
+})();
+</script>
 {% endblock %}

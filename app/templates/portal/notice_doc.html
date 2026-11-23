@@ -34,6 +34,21 @@ body {
 .toolbar .primary { background: #1f5fd0; border-color: #1f5fd0; color: #fff; }
 .toolbar .hint { font-size: 12px; color: #7b8798; font-family: var(--hei); }
 
+/* ---------- 关怀朗读控制条 ---------- */
+.readline {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 21cm; margin: 10px auto -12px;
+  padding: 8px 12px; background: #fff; border: 1px solid #d7dee8;
+  border-radius: 10px; font-size: 13px; color: #56637a;
+  font-family: var(--hei);
+}
+.readline button {
+  font: 13px/1 var(--hei); padding: 7px 14px; border-radius: 7px;
+  border: 1px solid #c9d3e0; background: #fff; color: #1f5fd0;
+  cursor: pointer;
+}
+.readline[hidden] { display: none; }
+
 /* ---------- 纸张 ---------- */
 .paper {
   width: 21cm; min-height: 29.7cm; margin: 22px auto 40px;
@@ -124,6 +139,12 @@ body {
   <button class="primary" onclick="window.print()">打印 / 另存为 PDF</button>
 </div>
 
+<div class="readline" id="readline">
+  <span id="readlineState">正在朗读</span>
+  <button type="button" id="readlineToggle">暂停</button>
+  <button type="button" id="readlineStop">停止</button>
+</div>
+
 <div class="paper">
   {% if mode == 'official' %}
   <div class="redhead">
@@ -159,10 +180,71 @@ body {
 /* 打印前把上下文收干净：避免部分浏览器把工具栏带上纸 */
 window.addEventListener('beforeprint', function () {
   document.querySelector('.toolbar').style.display = 'none';
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
 });
 window.addEventListener('afterprint', function () {
   document.querySelector('.toolbar').style.display = '';
 });
+
+/* 关怀模式：从 localStorage 读开关（与 base.html 同一键），
+ * 命中则用系统本地语音合成朗读「标题 + 全文」。
+ * 支持 or 未开启 → 静默返回，不报错；朗读期间显示控制条可暂停/继续/停止。 */
+(function () {
+  if (localStorage.getItem('xf_care') !== '1') return;
+  if (!window.speechSynthesis) return;
+  var bar = document.getElementById('readline');
+  var st = document.getElementById('readlineState');
+  var toggle = document.getElementById('readlineToggle');
+  var stop = document.getElementById('readlineStop');
+  var titleEl = document.querySelector('.doc-title');
+  var el = document.querySelector('.body');
+  if (!bar || !el || !el.textContent.trim()) return;
+  var sv = window.speechSynthesis;
+  var t = (titleEl ? titleEl.textContent : '') + '，' + el.textContent.replace(/\s+/g, ' ').trim();
+  var refresh = function () {
+    if (sv.paused) { st.textContent = '已暂停'; toggle.textContent = '继续'; }
+    else {
+      st.textContent = '正在朗读';
+      toggle.textContent = '暂停';
+    }
+  };
+  /* 同 base.html 的坑：Chrome 页面刚加载时语音列表还没就绪，
+   * 直接 speak 会无声排队；等 voiceschanged（或 300ms 兜底）再讲。 */
+  var say = function () {
+    var u = new SpeechSynthesisUtterance(t);
+    u.lang = 'zh-CN';
+    u.rate = 0.95;
+    u.onstart = function () { bar.hidden = false; refresh(); };
+    u.onpause = u.onresume = refresh;
+    u.onend = u.onerror = function () { bar.hidden = true; };
+    sv.cancel();
+    setTimeout(function () { sv.speak(u); }, 10);
+  };
+  if (toggle) toggle.addEventListener('click', function () {
+    if (sv.paused) { sv.resume(); }
+    else if (sv.speaking) { sv.pause(); }
+    refresh();
+  });
+  if (stop) stop.addEventListener('click', function () {
+    sv.cancel();
+    bar.hidden = true;
+  });
+  var ready = sv.getVoices && sv.getVoices().length > 0;
+  if (ready || !(sv.addEventListener && sv.getVoices)) {
+    say();
+  } else {
+    var settled = false;
+    var once = function () {
+      if (settled) return;
+      settled = true;
+      sv.removeEventListener('voiceschanged', once);
+      say();
+    };
+    sv.addEventListener('voiceschanged', once);
+    if (sv.getVoices) sv.getVoices();
+    setTimeout(once, 300);
+  }
+})();
 </script>
 </body>
 </html>

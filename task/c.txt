@@ -1,0 +1,263 @@
+社智通 · 实施计划分析（v3，D 组纳入）
+依据：《代码改动清单.docx》（2026-11-22）
+本篇：需求分析 + 行级核对 + 模型效果关系 + 分步实施顺序 + 防锁死全局检查
+本版修订：v2 修复 5 处硬伤；v3 将「D 组写死文案」改为纳入实施；v3.1 修复
+C-1 致命端点名 ROLE_HOME["resident"]="portal.home"→"portalviews.home"（蓝图注册名
+实为 portalviews，原值 url_for 必 BuildError → 登录/注册直通 500），已改代码并实测。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+〇、实施范围（v3）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+本次改动范围（四组全做）：
+  A 环境隔离地基（config.py + 3 个启动脚本）            → 必做
+  B 邀请码（发码脚本 + 注册校验 + InviteCode 表）        → 做
+  C 居民注册（resident 升级可登录 + 登录门禁 + 按本人过滤）→ 做
+  D 写死文案（幸福里 文案全部改配置，三处一起改）          → 做（本版新增）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+一、五处硬伤的事实证据（v2 复核结论，仍有效）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) 无发码入口：
+   models.py 无 InviteCode 表；scripts/ 无发码脚本；register() 只做"查码校验"。
+   → 补 scripts/gen_invites.py，否则码表空，试用第一天全员注册不了。
+2) 无区域变量：
+   config.py grep 不到 SITE；唯一 SESSION_COOKIE_SAMESITE 与区域无关。
+   → config.py 新增 SITE_CODE，register() 拿它跟码的 site 比对，"跨区码失效"才可实现。
+3) --reset 是"重灌演示数据"，不是"清空"：
+   scripts/seed_demo.py reset_all() = drop_all → create_all → seed_users() → seed_tasks()
+   → import_dir()。会重灌演示账号、任务、知识库；且 drop_all 会把 InviteCode 表删空。
+   → 清试用库用项目自带"清空业务数据"（app/api/admin.py:386 POST /data-clear，
+     confirm="清空业务数据"，app/data_reset.py:219 clear_business_data），
+     保留 admin + PRESERVED_TABLES；且 auth.py:856 seed_users() 见 data_clear 审计记录
+     只种 1 个 admin，不重灌演示账号。顺序强制：先清库 → 再发码 → 再分发。
+4) 居民手机号选填：
+   register.html 第 81 行 phone 标"选填"，后端 register() 不强制；
+   C 组按 "uid ↔ ResidentTicket.phone" 关联本人诉求，不填则登录后查不到自己的单。
+   → 居民注册 phone 必填；填报用注册手机号，闭环。app/portal.py 补 import current_user。
+5) 行号实测（v1 全错，本版为准）：
+   EVIDENCE_DIR=82 | SQLALCHEMY_DATABASE_URI=89 | KB_DIR=114 | NOTICE_DIR=125
+   注意：行号仍是快照，改动前对目标文件再 grep 确认，勿照抄。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+二、实操分步顺序（按依赖，每步做完即验收再下一步）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【第 1 步｜A-1】config.py
+  (1) NOTICE_DIR（第 125 行）改环境变量（默认 data/notices）。
+  (2) 新增 SITE_CODE = os.environ.get("SITE_CODE", "A")。
+  (3) 新增 RESIDENT_AUTH = os.environ.get("RESIDENT_AUTH", "0") == "1"。
+  不改：KB_DIR（114 行写死保持）、EVIDENCE_DIR（82 行已是）、DATABASE_URL（89 行已是）、
+        SECRET_KEY（走 resolve_secret_key）。
+  做完：python -m compileall config.py &&
+        python -c "from config import Config; print(Config.SITE_CODE, Config.RESIDENT_AUTH)"
+
+【第 2 步｜A-2】三个启动 .bat（新建，不动 启动系统.bat / 停止系统.bat）
+  脚本名       APP_PORT  DATABASE_URL         NOTICE_DIR            EVIDENCE_DIR          RESIDENT_AUTH  SITE_CODE  SECRET_KEY
+  启动_演示版   5000      data/community.db   默认                   默认                   0              A
+  启动_调整版   5002      data/dev.db         data/notices_dev      data/evidence_dev      1              B
+  启动_试用版   5001      data/trial.db       data/notices_trial    data/evidence_trial   1              C
+  三个 SECRET_KEY 必须互不相同；多地扩展复制试用版改 5101/5102…。
+  本步把 D 组需要的 ORG_* 环境变量也在脚本里一并给（见第 11 步取值，先留占位注释）。
+  验收：三脚本分别起 5000/5002/5001；A 库 cookie 访问 B 端口未登录；三库互不可见。
+
+【第 3 步｜A-3】清空试用库（必须在发码前）
+  用"清空业务数据"（POST /api/admin/data-clear，confirm="清空业务数据"）。
+  效果：保留 admin；删除业务数据 + 非 admin 账号；auth.py:856 此后不再重灌演示账号。
+  推荐顺序：清库 → 建表（create_all 自动）→ 发码 → 分发。
+  若清库在发码之后执行，需先把 "invite_code" 加入 data_reset.PRESERVED_TABLES。
+  验收：试用库登录只剩 admin；改造后重启不重灌演示账号。
+
+【第 4 步｜B-1】models.py 新增 InviteCode 表
+  class InviteCode(db.Model):
+      __tablename__ = "invite_code"
+      id      = db.Column(db.Integer, primary_key=True)
+      code    = db.Column(db.String(16), unique=True, nullable=False, index=True)
+      role    = db.Column(db.String(16), nullable=False)   # community/property/street/resident
+      org     = db.Column(db.String(64), nullable=False)   # 码绑定单位全名或简称
+      site    = db.Column(db.String(4), nullable=False)    # A/B/C，跨区校验用
+      used_by = db.Column(db.String(32), default="")       # 已用账号；空=未用
+      created_at = db.Column(db.DateTime, default=datetime.now)
+  ⚠ 若清库在发码后执行：把 "invite_code" 加入 app/data_reset.py 的 PRESERVED_TABLES。
+
+【第 5 步｜B-2】新增 scripts/gen_invites.py（发码入口）
+  用法（纯打印，不建管理页面）：
+    python scripts/gen_invites.py --site C --role resident --org "住武社区居民" --count 10 --prefix C-RES
+    python scripts/gen_invites.py --site C --role community --org "住武社区" --count 5  --prefix C-COM
+    python scripts/gen_invites.py --site C --role property  --org "住武物业" --count 5  --prefix C-PRO
+    python scripts/gen_invites.py --site C --role street    --org "以朵街道" --count 2  --prefix C-STR
+  逻辑：参数白名单（role∈{community,property,street,resident}，排除 admin；count≤100；
+        site∈{A,B,C}）→ secrets 生成"前缀-4 位随机字母数字"（排除易混 0O/1I）→ 入库查重
+        （唯一索引兜底，冲突重试）→ 逐条打印：
+        C-RES-3F7K  居民  住武社区居民  未使用
+  可选：--site 与 Config.SITE_CODE 不一致时告警（由管理员控制，不强绑）。
+  验收：码可打印、可入库、可查询；同前缀随机码不重复。
+
+【第 6 步｜B-3】register.html + app/admin.py register() 校验
+  register.html：
+    - 顶部加邀请码输入框 name="invite_code"，标注"必填，向管理员索取"。
+    - org 输入框改只读，值由服务端用码绑定 org 渲染回填，页面不可改。
+    - 加"我是居民"切换：居民模式隐藏 org 字段，提示"居民请填居民邀请码"。
+    - 居民模式 phone 改必填（去掉"选填"，加 required + 11 位校验）。
+  app/admin.py register()：
+    保留 IP 限流 5 次/小时；在表单校验处插入：
+    1) 读 invite_code → 查表：不存在 / used_by 非空 / site != Config.SITE_CODE → 报错不建号。
+    2) 命中：role、org 取码绑定值；不写死 community、不读表单 org。
+    3) 内部角色（community/property/street）：status="pending" + perms_json="[]"，走审核。
+    4) resident：注册即 active；phone 必填（form.phone 为空报错）。
+    5) invite.used_by = username，一码一人。
+  验收：码注册自动带出单位且 org 不可改；同码二次注册被拒；A 码在 B 库失败；
+        居民码注册后 direct active 可登录；不填 phone 被拒。
+
+【第 7 步｜C-1】app/auth.py 升级 resident 角色
+  ★ 致命端点名修正（已改）：居民端蓝图注册名是 portalviews（app/portal.py:18
+    Blueprint("portalviews", ...)），全站模板 url_for 用的都是 "portalviews.home"；
+    auth.py:193 原写 "resident":"portal.home" 是**错误端点**——Flask url_for 按蓝图
+    内部 name 找，portal.home 不存在 → 登录成功、居民注册直通都 BuildError → 500。
+    已改为 ROLE_HOME["resident"]="portalviews.home"，实测 url_for → /portal 返回 200。
+  ROLE_PERMS["resident"]（第 125 行）由 {"notice.view"} 补最小权限集（新增语义点
+  resident.report / resident.track / resident.rate，PERMS 加中文名）；
+  运行时垄槛靠 C-2/C-3 的 RESIDENT_AUTH 开关。
+  ROLE_NAMES["resident"]="居民"（第 25 行）已有，不用改。
+  验收：resident 登录能落 portalviews.home 返回 200；权限集非空；注册直通/pending
+        直通不再 BuildError。
+
+【第 8 步｜C-2】app/portal.py 视图层门禁
+  头部补：from app.auth import current_user
+  各视图（home/query/report/ticket/notices/contacts…）开头判：
+    if current_app.config.get("RESIDENT_AUTH") and not current_user():
+        return redirect(url_for("views.login"))
+  RESIDENT_AUTH=0（演示）行为不变。
+  验收：=1 未登录被重定向；=0 免注册照旧；=1 登录后正常进各页。
+
+【第 9 步｜C-3】app/api/portal.py 登录门禁 + 按本人过滤
+  1) report()/query_ticket() 等入口读 RESIDENT_AUTH：
+     =1 → 要求 current_user() 否则 401；phone 以注册账号为准（不收自由 phone）；
+     =0 → 保持手机号 + 6 位查询码双因子。
+  2) =1 时查询/评价按当前用户过滤本人诉求（uid ↔ ResidentTicket.phone）。
+  3) session["portal_tickets"] 仅演示模式使用；登录模式不依赖（同机换账号不串）。
+  验收：=1 居民登录只看到自己的诉求；=0 演示流程原样；两者由开关决定。
+
+【第 10 步｜C-4】居民 phone 必填后端兜底
+  register() 已做 resident phone 必填；保证 11 位格式校验与入库口径一致。
+
+【第 11 步｜D-0】config.py 新增 ORG_* 组织名配置（D 组前置）
+  统一一个 dict，每项环境变量兜底（默认幸福里，演示版零影响）：
+    ORG_NAMES = {
+        "street":        os.environ.get("ORG_STREET", "幸福里街道办事处"),
+        "community":     os.environ.get("ORG_COMMUNITY", "幸福里社区居民委员会"),
+        "property":      os.environ.get("ORG_PROPERTY", "幸福里物业服务有限公司"),
+        "property_short": os.environ.get("ORG_PROPERTY_SHORT", "幸福里物业"),
+    }
+  三个 .bat 的 ORG_* 取值建议：
+    演示版：不设（保持幸福里默认值）。
+    调整版：ORG_STREET=以朵街道 / ORG_COMMUNITY=住武社区 / ORG_PROPERTY=住武物业公司 /
+            ORG_PROPERTY_SHORT=住武物业  （值示例，以实际部署区为准）
+    试用版：同上或按当地区配置。
+  验收：Config.ORG_NAMES["property_short"] 能读到环境变量覆盖值。
+
+【第 12 步｜D-1】app/api/portal.py LINE_TO_ORG 改读配置（第 37-45 行）
+  现状：模块级写死 "物业":"幸福里物业"。
+  改法：定义读取函数（模块内），LINE_TO_ORG 的结构保留、值从 current_app.config 取：
+    def _line_to_org() -> dict:
+        cfg = current_app.config.get("ORG_NAMES", {})
+        return {
+            "物业": cfg.get("property_short", "幸福里物业"),
+            "综治": "社区综治",
+            "民政": "社区民政",
+            "卫健": "社区卫生",
+            "街道": cfg.get("street", "街道办事处"),
+        }
+    第 233、542 行两处 LINE_TO_ORG.get(l, l) 改为 _line_to_org().get(l, l)。
+  （综治/民政/卫健 本身不带"幸福里"，可不参数化；若也要改，同样加 ORG_* 键。）
+  验收：改配置后居民端"承办单位"显示本区物业名；页面无"幸福里"字样。
+
+【第 13 步｜D-2】app/portal_seed.py 三级联系人演示数据改读配置
+  现状：DEMO_ORG_CONTACTS（第 9-38 行）写死幸福里街道/社区/物业全名与地址。
+    seed_org_contacts()（第 41 行）在 app/__init__.py:285-288 启动时被调用，
+    表非空即跳过（幂等）。
+  改法：seed_org_contacts() 构造数据时，name 用 current_app.config 的 ORG_NAMES 覆盖，
+        duty/phone/address 仍用示例默认（地址可另加 ORG_* 键或保持演示值）。
+        grouped_contacts() 只读表，不改。
+  验收：改配置后新库启动，"找谁办事"页三级单位显示本区名称；表有数据时不覆盖既有运营数据。
+
+【第 14 步｜D-3】app/agents/dispatch.py DEFAULT_PROPERTY_CO 改读配置（第 19 行）
+  现状：模块级 DEFAULT_PROPERTY_CO = "幸福里物业"，被第 73/85/87/90 行使用
+        （工单 property_co、派单 detail、工单日志）。
+  改法：函数内取 current_app.config.get("ORG_NAMES").get("property_short", "幸福里物业")；
+        无 app context（纯脚本调用）时回退默认值。第 73/85/87/90 行共用同一取值。
+  验收：派单后工单 property_co 与 detail 显示本区物业名，与页面一致（D-1 闭环）。
+
+【第 15 步｜全局回归】冒烟 + 评测
+  每组完成后 python -m compileall app；C/D 全完成后：
+    - scripts/smoke_portal.py 26 项（RESIDENT_AUTH=0 / =1 各跑一次）
+    - scripts/smoke_security_hard.py（限流/鉴权）
+    - scripts/smoke_data_reset.py（data-clear 语义）
+    - 视情况 scripts/eval_e2e.py ×3（居民链路未影响模型效果）
+  验收：全绿；拆解/派单/RAG/脱敏链路无回归。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+三、防锁死全局检查（计划落实后、上机试用前）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 权限环路不锁死
+   - admin 永不可降权（auth.py role=="admin"→全权限）；data_clear 只删非 admin
+     （app/data_reset.py:219 "role IS NULL OR role<>admin"）。
+   - 每角色至少一条可命中 ROLE_HOME 的路由（一次性脚本遍历 url_map 核对）。
+   - register() 不允许创建 admin；gen_invites 白名单排除 admin。
+   - RESIDENT_AUTH=1 下居民注册=active，无"永远 pending"锁死。
+2. 死循环 / 无限重定向
+   - 未登录 → login；login 成功 → ROLE_HOME（resident→portalviews.home）须返回 200（非 302）。
+   - ROLE_HOME 每个端点实测 url_for 可构建（曾踩坑：portal.home 不存在导致 BuildError→500，
+     已在 C-1 修复并加"端点注册自检"：遍历 url_map 逐一确认 ROLE_HOME 的值存在）。
+   - active 用户不再进 pending 路径（auth.py 已处理）。
+3. 数据库锁死
+   - data_clear 有 PRAGMA busy_timeout=20000 + foreign_keys=OFF 隔离；
+     全程 session.remove() + dispose，无残留长事务持锁。
+4. 配置一致性
+   - 三套 SECRET_KEY / DATABASE_URL / SITE_CODE / ORG_NAMES 各自独立且互不相同。
+5. 冒烟兜底：四项冒烟 + compileall 全绿再上机试用。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+四、D 组交付明细（v3 新增实施内容）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+要改 4 个文件：
+  1) config.py          新增 ORG_NAMES（D-0，第 11 步）
+  2) app/api/portal.py  LINE_TO_ORG → _line_to_org() 读配置（D-1，第 12 步）
+  3) app/portal_seed.py seed_org_contacts() 名称参数化（D-2，第 13 步）
+  4) app/agents/dispatch.py DEFAULT_PROPERTY_CO → 读配置（D-3，第 14 步）
+原则：必须四处一起改完再启用（页面显示、三级联系人才会与工单派单名一致；
+      只改其一就是"页面显示住武、派单还叫幸福里"的半吊子状态）。
+范围外（本版不做）：personbook.py 的"幸福里→以朵"映射底册（人员底册接真实台账时
+      另行处理）；各模板 <title>/brand 里的"幸福里·居民服务"品牌字样（演示版保留
+      品牌形象，暂不参数化；如需替换在 D 组收尾时统一处理）。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+五、里程碑顺序总览
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第 1 步   config.py（SITE_CODE / RESIDENT_AUTH / NOTICE_DIR）   → 验收 A1
+第 2 步   三个启动 .bat                                        → 验收 A2
+第 3 步   清空试用库（data_clear，发码前）                       → 验收 A3
+第 4 步   models.py InviteCode 表（+ PRESERVED_TABLES）         → compileall
+第 5 步   scripts/gen_invites.py 发码脚本                       → 验收 B2
+第 6 步   register.html + register() 校验                       → 验收 B3
+第 7 步   auth.py resident 升级                                 → 验收 C1
+第 8 步   portal.py 视图门禁（补 import current_user）           → 验收 C2
+第 9 步   api/portal.py 登录门禁 + 按本人过滤                     → 验收 C3
+第 10 步  居民 phone 必填闭环                                    → 验收 C4
+第 11 步  config.py ORG_NAMES（D 组数据源）                      → 验收 D0
+第 12 步  api/portal.py LINE_TO_ORG 改读配置                     → 验收 D1
+第 13 步  portal_seed.py 三级联系人名称参数化                     → 验收 D2
+第 14 步  dispatch.py DEFAULT_PROPERTY_CO 改读配置               → 验收 D3
+第 15 步  冒烟 + 评测全回归                                      → 全绿
+第 16 步  三、防锁死全局检查                                     → 通过
+第 17 步  上机试用（发码 → 居民注册 → 填报 → 查进度 → 评价 → 核对页面无"幸福里"）→ 用户反馈
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+六、风险与注意
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) 动手前与并行改动对齐：auth.py/models.py 有另一路在并行改（11-21 时间戳），改 B1/C1 前先确认。
+2) 行号可漂移：以文件实际为准，先把目标文件全读一遍再改。
+3) 清库与发码顺序：清库（data_clear）在前、发码在后；若清库在发码后，
+   invite_code 必须先加入 data_reset.PRESERVED_TABLES。
+4) 居民 phone 必填是 C 组闭环前提；漏了会出现"登录了查不到自己的单"。
+5) D 组四处必须同批改完再启用；只改其一会出现页面与派单名不一致。
+6) 模型效果无实质风险：改动在账号/配置/文案层，不触碰拆解/派单决策/RAG/脱敏链路，
+   冒烟回归即可覆盖。

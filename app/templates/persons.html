@@ -54,6 +54,24 @@
   /* 在册但被收窄挡住：不是"没有"，是"你看不到"，需要人去核实 */
   .mres.hidden{background:#fdf8f0;border-left:3px solid #d9a340;
     padding:9px 12px;border-radius:0 7px 7px 0;color:#a8650f;}
+
+  /* 台账上传导入区 */
+  .impx{border:1px solid #e3ebf5;border-radius:9px;padding:12px 14px;
+    background:#fbfcfe;font-size:12.8px;line-height:1.75;color:#4a5b70;}
+  .impx-title{font-weight:600;color:#1a5fae;font-size:14px;}
+  .impx-title .impx-meta{font-weight:400;color:#8a97a8;font-size:12px;margin-left:8px;}
+  .impx-note{color:#a8650f;}
+  .impx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+    gap:8px 18px;margin:10px 0;}
+  .impx-grid .kv b{display:block;color:#2c3e50;}
+  .impx-samples{margin-top:10px;}
+  .impx-samples table{width:100%;border-collapse:collapse;}
+  .impx-samples th{font-size:11px;color:#8a97a8;text-align:left;padding:3px 6px;
+    border-bottom:1px solid #e3ebf5;white-space:nowrap;}
+  .impx-samples td{padding:4px 6px;border-bottom:1px solid #f0f4f9;font-size:12px;}
+  .impx-apply{margin-top:12px;padding-top:10px;border-top:1px dashed #dbe7f5;
+    display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;}
+  .impx .chk{display:inline-flex;align-items:center;gap:5px;cursor:pointer;}
 </style>
 
 <div class="col-12">
@@ -68,6 +86,41 @@
     当前库为<b>按同样结构生成的合成数据</b>，不是原件。</span>
   </div>
 </div>
+
+{% if can('person.import') %}
+<div class="card col-12" id="impCard">
+  <div class="card-h">
+    <h2>⬆ 台账上传导入</h2>
+    <span class="hint">街道专用：选文件 → 识别预览 → 确认导入。身份证只作去重键，不存明文</span>
+  </div>
+  <div class="card-b">
+    <div class="pfilter" style="margin-bottom:10px">
+      <input type="file" id="impFile" accept=".xlsx"
+             style="flex:1 1 300px;padding:5px 9px;height:34px"
+             title="选街道下发的 .xlsx 台账原件（残疾人 / 防溺水）">
+      <select id="impKind" title="文件列数对得上的话一般能自动认出，认不出时手动指定">
+        <option value="auto">自动识别类型</option>
+        <option value="disabled">残疾人台账（17 列）</option>
+        <option value="drowning">防溺水台账（21 列）</option>
+      </select>
+      <button class="btn btn-primary" id="btnPreview" type="button">识别预览</button>
+    </div>
+    <div id="impRes" class="impx" hidden>
+      <div class="impx-title">
+        <span id="impKindName">—</span>
+        <span class="impx-meta" id="impMeta">—</span>
+      </div>
+      <div id="impBody"></div>
+      <div class="impx-apply">
+        <label class="chk"><input type="checkbox" id="impPurge"> 先清空旧底册再导入
+          <span style="color:#a8650f">（换街道下发批次时勾选，会把库里现有名单整体替换）</span></label>
+        <button class="btn btn-primary" id="btnApply" type="button">确认导入</button>
+        <span class="impx-note" id="impApplyHint"></span>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <div class="card stat col-4" id="cTotal">
   <div class="ic" style="background:#e3edfb">👥</div>
@@ -179,6 +232,8 @@
   'use strict';
   var PAGE_SIZE = 20;
   var NO_COMM = '__none__';           // 与 app/personbook.py:NO_COMMUNITY 一致
+  // 街道/管理员才有导入权，页面据此决定空底册提示是否引导上传
+  window.canImportPerson = {{ 'true' if can('person.import') else 'false' }};
   // weight 不放在下拉里（它不是"精度"也不是"标签"），但筛选条件必须有个落点，
   // 否则点击 KPI 后再点查询就丢了 —— 状态和控件分离，两者都要能表达它。
   var state = { page: 1, total: 0, filtered: false, weight: '' };
@@ -277,7 +332,8 @@
       if (!items.length) {
         tb.innerHTML = '<tr><td colspan="6" style="padding:26px;text-align:center;color:#a8b3c2">' +
           (state.filtered ? '没有符合条件的记录 —— 条件可能太严，试试「重置」'
-                          : '底册里还没有数据，先跑 scripts/import_ledger.py --apply') +
+                          : ('底册里还没有数据' +
+                             (window.canImportPerson ? '，用上方「台账上传导入」上传街道下发的 .xlsx 台账即可' : ''))) +
           '</td></tr>';
       } else {
         tb.innerHTML = items.map(rowHtml).join('');
@@ -368,6 +424,138 @@
     $('fprec').value = '';
     $('fcomm').value = NO_COMM;
     go(1);
+  });
+
+  // ---------------- 台账上传导入 ----------------
+  // 预览只统计不写库；确认时把用户手里的那份 File 再传一次，
+  // 服务端**不缓存**上次解析结果 —— 预览看到的和入库的就是同一份文件，
+  // 中间谁改了文件、谁换了文件都与这次导入无关。
+  var impFile = null;      // 当前选中待导入的文件（用户选的原始 File 对象）
+
+  $('impFile').addEventListener('change', function () {
+    impFile = this.files && this.files[0] ? this.files[0] : null;
+    $('impRes').hidden = true;
+    $('impApplyHint').textContent = '';
+  });
+
+  function nf(n) { return (n === 0 || n) ? n : 0; }
+
+  function renderPreview(d) {
+    var s = d.data || {};
+    var stat = s.stat || {};
+    var body = $('impBody');
+    var levels = {
+      '3': '栋+单元+门号', '2': '栋+单元',
+      '1': '仅到楼栋/组', '0': '无法定位'
+    };
+    var levelHtml = Object.keys(levels).map(function (k) {
+      var has = s.addr_levels || {};
+      return '<div class="kv"><b>' + levels[k] + '</b>' + nf(has[k]) + ' 人</div>';
+    }).join('');
+    var commHtml = (s.communities || []).map(function (c) {
+      return '<div class="kv"><b>' + esc(c.name || '（未明确）') + '</b>' + c.count + ' 人</div>';
+    }).join('') || '<div class="kv"><b>（无）</b>0 人</div>';
+    var tagHtml = (s.tags || []).map(function (t) {
+      return '<div class="kv"><b>' + esc(t.name) + '</b>' + t.count + ' 人</div>';
+    }).join('') || '<div class="kv"><b>（无标签）</b></div>';
+    // 权重只看最高一档：与 riskreview 的风险分档口径一致
+    var w = s.weights || {};
+    var weightHtml = '<div class="kv"><b>风险权重</b>重点看护 ' + nf(w['3']) +
+      ' · 重点关注 ' + nf(w['2']) + ' · 需关注 ' + nf(w['1']) + '</div>';
+
+    var samples = (s.samples || []).map(function (r) {
+      var tags = (r.tags || []).map(function (t) { return esc(t); }).join('、');
+      return '<tr><td>' + esc(r.name) + '</td>' +
+        '<td>' + esc(r.id_masked || '—') + '</td>' +
+        '<td>' + esc(r.community || '—') + '</td>' +
+        '<td>' + esc(r.address || '—') + '</td>' +
+        '<td>' + (tags || '—') + '</td></tr>';
+    }).join('');
+
+    body.innerHTML =
+      '<div class="impx-grid">' + levelHtml + commHtml + tagHtml +
+        '<div class="kv" style="grid-column:1/-1">' + weightHtml + '</div></div>' +
+      (samples
+        ? '<div class="impx-samples"><b>样本（脱敏后前 ' + s.samples.length + ' 条）</b>' +
+          '<table><thead><tr><th>姓名</th><th>证件号</th><th>社区</th>' +
+          '<th>地址</th><th>标签</th></tr></thead><tbody>' + samples + '</tbody></table></div>'
+        : '') +
+      (s.note ? '<div class="impx-note" style="margin-top:8px">⚠️ ' + esc(s.note) + '</div>' : '');
+
+    $('impKindName').textContent = '已识别：' + esc(s.kind_name || s.kind || '');
+    $('impMeta').textContent = '去重后 ' + nf(s.total) + ' 人' +
+      ' · 原始行 残疾 ' + nf(stat['残疾_原始行']) + ' 防溺 ' + nf(stat['防溺_原始行']) +
+      ' · 跳过 ' + (nf(stat['跳过_无有效身份证']) + nf(stat['跳过_无姓名'])) +
+      ' · 重复合并 ' + nf(stat['重复_合并']);
+    $('impRes').hidden = false;
+  }
+
+  $('btnPreview').addEventListener('click', function () {
+    var res = $('impRes');
+    if (!impFile) {
+      res.hidden = false;
+      $('impKindName').textContent = '先选文件';
+      $('impMeta').textContent = '';
+      $('impBody').innerHTML = '<div class="impx-note">还没选 .xlsx 台账文件。</div>';
+      return;
+    }
+    res.hidden = false;
+    $('impKindName').textContent = '识别中…';
+    $('impMeta').textContent = '';
+    $('impBody').innerHTML = '<div class="impx-note">正在解析文件（身份证明文只在内存里读一遍，不落盘）…</div>';
+
+    var fd = new FormData();
+    fd.append('file', impFile);
+    fd.append('kind', $('impKind').value);
+    api('/api/persons/import/preview', { method: 'POST', body: fd })
+      .then(function (j) {
+        if (j.code !== 0) {
+          $('impKindName').textContent = '识别失败';
+          $('impBody').innerHTML = '<div class="impx-note" style="color:#b03131">' +
+            esc(j.msg || '文件解析失败') + '</div>';
+          return;
+        }
+        renderPreview(j);
+      }).catch(function (e) {
+        $('impKindName').textContent = '识别失败';
+        $('impBody').innerHTML = '<div class="impx-note" style="color:#b03131">' +
+          esc(e.message || '网络错误') + '</div>';
+      });
+  });
+
+  $('btnApply').addEventListener('click', function () {
+    if (!impFile) return;
+    var btn = $('btnApply');
+    var hint = $('impApplyHint');
+    btn.disabled = true;
+    hint.textContent = '导入中：备份 → 入库 → 审计，请稍候…';
+
+    var fd = new FormData();
+    fd.append('file', impFile);
+    fd.append('kind', $('impKind').value);
+    fd.append('purge', $('impPurge').checked ? '1' : '0');
+
+    api('/api/persons/import/apply', { method: 'POST', body: fd })
+      .then(function (j) {
+        btn.disabled = false;
+        if (j.code !== 0) {
+          hint.textContent = '';
+          $('impApplyHint').innerHTML = '<span style="color:#b03131">导入失败：' +
+            esc(j.msg || '未知原因') + '</span>';
+          return;
+        }
+        var r = j.data || {};
+        hint.innerHTML = '✅ 导入完成<span style="color:#8a97a8">：新增 <b>' + nf(r.added) +
+          '</b> 人 · 补标签 <b>' + nf(r.merged) + '</b> 人 · 批次 ' + esc(r.batch || '') +
+          (r.purge ? ' · 已清空旧底册' : '') +
+          (r.backup ? ' · 备份 ' + esc(r.backup.split(/[\\/]/).pop()) : '') +
+          '</span>';
+        loadStats().then(function () { go(state.page); });
+      }).catch(function (e) {
+        btn.disabled = false;
+        hint.innerHTML = '<span style="color:#b03131">导入失败：' +
+          esc(e.message || '网络错误') + '</span>';
+      });
   });
 
   // ---------------- 地址反查 ----------------

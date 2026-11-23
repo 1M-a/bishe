@@ -3,14 +3,18 @@
 这里只放**应当公开**的内容：单位名称、职责、对外电话、办公地址、服务时间。
 不放任何个人手机号、身份证、住址门牌——居民端是公网可见页面，
 公开边界必须比内部端更严。
+
+三级单位的**名称**从 Config.ORG_NAMES 读取（环境变量可覆盖），
+职责 / 电话 / 地址仍用演示示例值。表非空即跳过，不覆盖运营数据。
 """
+from flask import current_app
+
 from app.extensions import db
 from app.models import OrgContact
 
 DEMO_ORG_CONTACTS = [
     {
         "level": "street", "sort": 1,
-        "name": "幸福里街道办事处",
         "duty": "统筹辖区社区治理与民生政策落实；受理跨社区、需多部门协同的事项；"
                 "对社区与物业的办理情况进行督办。",
         "phone": "0571-8601 0001",
@@ -19,7 +23,6 @@ DEMO_ORG_CONTACTS = [
     },
     {
         "level": "community", "sort": 2,
-        "name": "幸福里社区居民委员会",
         "duty": "居民日常事务受理；入户走访与特殊群体探视；民政救助、老龄补贴初审；"
                 "邻里矛盾纠纷调解；人口信息登记。",
         "phone": "0571-8601 0002",
@@ -28,7 +31,6 @@ DEMO_ORG_CONTACTS = [
     },
     {
         "level": "property", "sort": 3,
-        "name": "幸福里物业服务有限公司",
         "duty": "公共设施设备维修养护；楼道照明、电梯、供水供电报修；"
                 "保洁绿化与秩序维护；物业类投诉受理。",
         "phone": "0571-8601 0003",
@@ -39,11 +41,22 @@ DEMO_ORG_CONTACTS = [
 
 
 def seed_org_contacts() -> int:
-    """幂等写入：表里已有数据就跳过，不覆盖运营中改过的电话"""
+    """幂等写入：表里已有数据就跳过，不覆盖运营中改过的电话
+
+    name 按 ORG_NAMES 配置取：演示版默认幸福里；部署到别区时由
+    ORG_STREET / ORG_COMMUNITY / ORG_PROPERTY 环境变量改成本区名称。
+    """
     if OrgContact.query.count() > 0:
         return 0
-    for d in DEMO_ORG_CONTACTS:
-        db.session.add(OrgContact(**d))
+    cfg = current_app.config.get("ORG_NAMES", {})
+    for i, d in enumerate(DEMO_ORG_CONTACTS):
+        row = dict(d)
+        row["name"] = {
+            "street": cfg.get("street", "幸福里街道办事处"),
+            "community": cfg.get("community", "幸福里社区居民委员会"),
+            "property": cfg.get("property", "幸福里物业服务有限公司"),
+        }[d["level"]]
+        db.session.add(OrgContact(**row))
     db.session.commit()
     return len(DEMO_ORG_CONTACTS)
 

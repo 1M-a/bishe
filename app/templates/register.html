@@ -18,6 +18,10 @@
     box-shadow:0 0 0 3px rgba(32,107,196,.12)}
   .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .tip{font-size:12px;color:#7b8fa7;margin-top:6px;line-height:1.6}
+  .seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px}
+  .seg button{flex:1;padding:10px 8px;border:1.5px solid #d3dded;border-radius:9px;
+    background:#fbfdff;font-size:13px;color:#41556f;cursor:pointer;transition:.18s}
+  .seg button.on{background:#e8f1ff;border-color:#7fa7e0;color:#16408f;font-weight:600}
   .steps{display:flex;gap:8px;margin:18px 0 4px}
   .step{flex:1;padding:10px 8px;border-radius:9px;background:#f2f6fc;font-size:12px;color:#5b7392;text-align:center}
   .step b{display:block;color:#206bc4;font-size:13px;margin-bottom:2px}
@@ -61,14 +65,25 @@
 
   <section class="form-side">
     <div class="form-card">
-      <h2>申请工作账号</h2>
-      <p class="hint">提交后账号处于「待审核」，管理员审核时会按您的岗位勾选权限</p>
+      <h2>申请账号</h2>
+      <p class="hint">凭邀请码注册：单位由邀请码自动带出，工作人员待审核、居民注册即开通</p>
 
       {% if err %}<div class="err">⚠️ {{ err }}</div>{% endif %}
 
       <form method="post" autocomplete="off">
+        <label>我是</label>
+        <div class="seg" id="segWho">
+          <button type="button" class="on" data-who="staff">工作人员</button>
+          <button type="button" data-who="resident">居民</button>
+        </div>
+
+        <label>邀请码</label>
+        <input type="text" name="invite_code" value="{{ form.invite_code }}"
+               placeholder="必填，向管理员索取" required autofocus>
+        <div class="tip">一个邀请码只能注册一次；居民请使用居民区发放的邀请码</div>
+
         <label>登录账号</label>
-        <input type="text" name="username" value="{{ form.username }}" placeholder="如 zhaoshegong" required autofocus>
+        <input type="text" name="username" value="{{ form.username }}" placeholder="如 zhaoshegong" required>
         <div class="tip">字母开头，3~20 位，可用字母、数字、下划线</div>
 
         <div class="two">
@@ -79,11 +94,16 @@
           <div>
             <label>联系电话</label>
             <input type="tel" name="phone" value="{{ form.phone }}" placeholder="选填，便于核实">
+            <div class="tip" id="phoneTip">选填，便于核实</div>
           </div>
         </div>
 
-        <label>所属单位</label>
-        <input type="text" name="org" value="{{ form.org }}" required>
+        <div id="teamFields">
+          <label>所属单位</label>
+          <input type="text" name="org" value="{{ form.org }}" readonly
+                 placeholder="提交后按邀请码自动带出">
+          <div class="tip">由邀请码绑定单位决定，不可手动修改</div>
+        </div>
 
         <div class="two">
           <div>
@@ -96,7 +116,7 @@
           </div>
         </div>
 
-        <button class="submit" type="submit" style="margin-top:20px">提交申请</button>
+        <button class="submit" type="submit" style="margin-top:20px">提交注册</button>
       </form>
 
       <div class="note">🔐 账号与权限变更均写入审计日志，可在管理员的「用户与权限」中查看。</div>
@@ -104,5 +124,36 @@
     </div>
   </section>
 </div>
+
+<script>
+(function () {
+  var teamFields = document.getElementById('teamFields');
+  var phoneTip = document.getElementById('phoneTip');
+  var phoneInput = document.querySelector('input[name=phone]');
+  var btns = document.querySelectorAll('#segWho button');
+  function isResident() {
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].classList.contains('on')) return btns[i].getAttribute('data-who') === 'resident';
+    }
+    return false;
+  }
+  function refresh() {
+    var res = isResident();
+    // 居民注册：隐藏"所属单位"（由居民邀请码带出），手机号必填
+    teamFields.style.display = res ? 'none' : 'block';
+    phoneTip.textContent = res ? '必填，11 位手机号，用于查办理进度' : '选填，便于核实';
+    phoneInput.required = res;
+    phoneInput.placeholder = res ? '必填，11 位手机号' : '选填，便于核实';
+  }
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      btns.forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      refresh();
+    });
+  });
+  refresh();
+})();
+</script>
 </body>
 </html>

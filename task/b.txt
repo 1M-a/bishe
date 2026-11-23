@@ -1,0 +1,213 @@
+功能补充计划分析（b.txt · P1-5 滚动预警条落地细则）
+==================================================
+定位：本文是 a.txt 的【修正 + 细化】。对 P1-5（滚动预警条）给出可落地的
+      精确改动清单；同时按用户 2026-11-21 拍板修正 a.txt 三处原文：
+        · 修正1：D3 原"预警条 = is_alert=1 且 pinned" → 去掉 pinned 条件
+                 （本次拍板：pinned 与 is_alert **正交**，pinned 不得进滚动条）
+        · 修正2：预警判定禁止用"标题含预警二字"。
+        · 修正3：滚动条跳【网页版详情 /portal/notice/<id>】，不跳 notice_doc。
+      基线不变：E:\program\decrease a\bishe（精简版）。
+      当前代码状态已逐行核对（models.py / portal.py / notice/ingest.py /
+      auth.py 迁移 / base.html / home.html / notices.html / notice.html）。
+
+============================================================
+〇、结论先行（对用户验收标准的落点）
+------------------------------------------------------------
+1. 两个正交标记，只在一处做加法：Notice 加 is_alert（默认 False），
+   旧库 ALTER TABLE 兜底（沿用 _migrate_notice_table 现有写法）。
+2. 滚动条唯一判据：is_alert=1 且已发布（visible_query 已含 published 过滤），
+   **不再叠加 pinned**，也不看标题。无预警 → 整个元素不渲染。
+3. 列表排序维持现状（pinned → pinned_at → published_at），
+   is_alert 不参与任何排序/标签逻辑——"未置顶的预警按普通时间排"天然成立。
+4. 关怀朗读全部复用 window.xfCare.speak()，不新写 speechSynthesis。
+5. 街道端发文逻辑、现有置顶行为、底部导航、详情页 mode 切换一律不动。
+6. 实施顺序建议：字段/迁移 → 服务端查询 → 模板/样式 → 朗读衔接 → 验收脚本。
+
+============================================================
+一、数据层：Notice.is_alert 新字段 + 旧库兜底
+------------------------------------------------------------
+【文件 app/models.py｜Notice（当前 311-374 行）】
+  在 pinned / pinned_at 之后（约 352 行后）新增一行：
+      is_alert = db.Column(db.Boolean, default=False)  # 预警：只决定是否进首页滚动条
+  类内注释要点明【与 pinned 正交】：
+      · pinned 只影响列表排序 + "置顶"标签；
+      · is_alert 只决定是否进首页滚动条；
+      · 禁止互替、禁止按标题关键词判预警、禁止把 pinned=1 塞进滚动条。
+      · 街道端发文/置顶操作不改这两列，is_alert 由演示口径直接标注。
+
+【文件 app/auth.py｜_migrate_notice_table()（当前 729 行起）】
+  该函数已为 notice 表做 ALTER TABLE 版迁移（inspect + 逐个补列），
+  在循环 ddl 元组里追加一项：
+      ("is_alert", "BOOLEAN DEFAULT 0"),
+  要点：
+    · SQLite 的 BOOLEAN 就是 INTEGER 0/1，`BOOLEAN DEFAULT 0` 可写；
+    · 老行缺列 → 自动补列且默认 0 → 老的置顶公告不会凭空变成预警，
+      正好符合"不冤枉塞进滚动条"。
+    · 不需要回填逻辑（默认 False 即正确初值）。
+  验证：`flask init-db` / 启动 `db.create_all()` 后对已存在库再跑一次，
+        应打出"ADD COLUMN is_alert"，无错且旧行 is_alert=0。
+
+============================================================
+二、服务端：home() 取预警 + notices() 确认排序不动
+------------------------------------------------------------
+【文件 app/portal.py｜home()（当前 45-50 行）】
+  在最近诉求查询旁追加：
+      from app.notice.ingest import visible_query
+      alerts = (visible_query("resident")
+                .filter(Notice.is_alert.is_(True))
+                .order_by(Notice.published_at.desc())
+                .all())
+      return render_template("portal/home.html",
+                             recent_ticket=..., recent_view=...,
+                             alerts=alerts)
+  要点：
+    · visible_query("resident") 已过滤 status=published + scope='all' +
+      direction!=out——**草稿/未发布/内部件/征询稿绝对进不来**，符合
+      "居民端任何位置只见已发布"。
+    · 这里绝不能加 .filter(Notice.pinned.is_(True))——正交规则。
+    · 多条取全部（.all()），模板负责轮播；无数据时列表为空 → 模板不渲染。
+
+【文件 app/portal.py｜notices()（当前 66-72 行）】
+  排序已正确（pinned.desc → pinned_at.desc → published_at.desc），
+  这一行【不改】。只补一条注释：
+      # 排序只看 pinned/pinned_at；is_alert 与排序、标签完全无关（正交）。
+  这样"未置顶的预警按普通时间排、不带置顶标签"由现状直接满足，零改动。
+
+【文件 app/portal.py｜notice()（当前 78-97 行）】
+  不动。mode=view/print/official 双版本切换保留；
+  滚动条/列表都跳默认的网页版详情，只有显式点"打印版/发布版"才切 mode。
+
+============================================================
+三、模板：首页滚动条 + 关怀朗读衔接
+------------------------------------------------------------
+【文件 app/templates/portal/home.html｜body 顶部（CTA 卡之前）】
+  {% if alerts %}
+  <a class="p-alert" href="{{ url_for('portalviews.notice', nid=alerts[0].id) }}"
+     role="alert" aria-live="polite">
+    <span class="p-alert-ico">⚠️</span>
+    <span class="p-alert-ticker">
+      {% for n in alerts %}
+      <span class="p-alert-item">{{ n.summary or n.title }}</span>
+      {% endfor %}
+    </span>
+    <span class="p-alert-arrow">›</span>
+  </a>
+  {% endif %}
+  要点：
+    · 用 alerts.all() 的结果做多条目轮播（CSS 滚动见 §四）；
+    · 无预警时 {% if alerts %} 整体不渲染，页面不占位、不留空白；
+    · 整体是一个 <a>，href 指向 alerts[0]（最新预警）的网页版详情，
+      绝不放 notice_doc / notice?mode=print；
+    · 记得贴 aria-live/role 不动基础可访问性。
+
+【文件 app/templates/portal/home.html｜script 块（新加关怀循环朗读）】
+  <script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // 关怀模式 + 有预警 → 循环朗读预警文本。完全复用 xfCare.speak：
+    // speak 内部已判 未开启/不支持/正在朗读 三条件，不满足就静默 return。
+    // 非关怀模式自动不走朗读（设计如此，不是缺陷）。
+    var items = Array.prototype.map.call(
+      document.querySelectorAll('.p-alert-item'),
+      function (el) { return el.textContent.trim(); }).filter(Boolean);
+    if (!items.length || !window.xfCare) return;      // 无预警/未就绪静默跳过
+    var text = '社区预警：' + items.join('。') + '。';
+    function speakLoop() {
+      window.xfCare.speak(text, { rate: 0.95 });
+    }
+    speakLoop();
+    setInterval(speakLoop, 60000);                     // 每 60s 复查一次
+  });
+  </script>
+  要点：
+    · 循环用 setInterval 反复调 xfCare.speak，不自己造 SpeechSynthesis；
+      speak 遇"正在朗读"会返回 false → 不打断详情页已有朗读、不重复播；
+    · 首页循环朗读不中断详情朗读的口径与现有注释一致；
+    · speak 自身静默失败 → 不报错、不影响页面。
+
+【文件 app/templates/portal/notice.html / notice_doc.html】
+  详情自动朗读逻辑（notice.html 现有 DOMContentLoaded + xfCare.speak）
+  一律保留不动——用户明令"不要改"。
+
+============================================================
+四、样式：滚动条（375×667 不横向溢出）
+------------------------------------------------------------
+【文件 app/static/css/portal.css｜追加 .p-alert 系列】
+  .p-alert {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff3e0; border: 1px solid #ffcc80; border-radius: 10px;
+    padding: 9px 12px; margin-bottom: 12px; color: #8a4b00;
+    text-decoration: none; overflow: hidden;   /* 关键：防止子元素撑出横向滚动 */
+    box-sizing: border-box; width: 100%;       /* 375 宽度下盒内收缩 */
+  }
+  .p-alert-ticker {
+    flex: 1; min-width: 0;                     /* flex 子项最小宽 0，允许收缩 */
+    display: flex; overflow: hidden; white-space: nowrap;
+  }
+  .p-alert-item {
+    display: inline-block; padding-right: 24px;
+    font-size: 14px; vertical-align: middle;
+    /* 轮播：可用 step 位移或简单逐条淡入切换，任选其一；
+       落实多条目轮播时此容器 overflow:hidden 兜底，绝不横向溢出 */ }
+  .p-alert-ico { font-size: 16px; flex-shrink: 0; }
+  .p-alert-arrow { margin-left: auto; font-size: 16px; color: #c9852e;
+                   flex-shrink: 0; }
+  /* 关怀模式字号联动（与现有 body.care 规则同款） */
+  body.care .p-alert, body.care .p-alert-item { font-size: 16px; }
+  验收：375×667 下 documentElement.scrollWidth <= window.innerWidth。
+
+============================================================
+五、验收（对照用户清单逐条）
+------------------------------------------------------------
+造 4 条已发布公告（①普通②置顶③预警④置顶+预警）：
+  - 建议用 scripts/make_notice_demo.py 类似脚本直接往 notice 表写，
+    或在 smoke 脚本里 create_app 后构造 Notice(status=published,
+    scope='all', pinned=…, is_alert=…, published_at=…)，无需走街道端接口。
+① 普通：pinned=0, is_alert=0
+② 置顶：pinned=1, is_alert=0
+③ 预警：pinned=0, is_alert=1
+④ 置顶+预警：pinned=1, is_alert=1
+逐条断言：
+  1) 首页：只有 ③④ 进 /portal 页面的 .p-alert 元素，①② 不在其中；
+     is_alert 一条真实的都不存在时（删掉 ③④），/portal 响应体不含 .p-alert。
+  2) 列表：/portal/notices 顺序 = ②④ 在前（④ 比 ② 后置顶则在更前），
+     ③ 按发布时间插队；②④ 的 DOM 带 .tag-pin（"置顶"），只有 ②④。
+  3) 点 .p-alert / 列表项 → 落到的 href 均为 /portal/notice/<id>
+     （不是 notice_doc、不含 mode=print）；详情页出现"发布版/打印版"切入口。
+  4) 关怀：xf_care=1 造访 /portal → 首页触发 xfCare.speak（可桩
+     xfCare.speak 计数断言）；xf_care=0 → 不触发；进入详情页时既有
+     朗读逻辑不受影响。
+  5) 手机 375×667 视口 → home 无横向溢出。
+  6) 草稿/未发布公告置 is_alert=1 → 不出现（visible_query 已排除）。
+
+【新增 smoke 段落位置】
+  scripts/smoke_portal.py 追加 [11] 预警条正交性 小节；
+  scripts/smoke_frontend.py 或截图脚本补 /portal 手机截图。
+
+============================================================
+六、回归与约束检查
+------------------------------------------------------------
+每改一个文件即执行：
+  python -m compileall app
+统一回归（沿用 a.txt §五-7）：
+  python -m compileall app
+  scripts/smoke_portal.py         # 居民端回归（含新增预警断言）
+  375×667 手机窗口截图验证
+  scripts/audit_all.py --offline  # 权责/审计体检
+约束自查：
+  ✅ 不改街道端发文逻辑          ✅ 不改现有置顶行为/排序
+  ✅ 不新增依赖（轮播纯 CSS/JS） ✅ 详情页双版本切换保留
+  ✅ 滚动条只认 is_alert 正交规则 ✅ 草稿绝不外泄（visible_query 兜底）
+  ✅ 关怀朗读全部复用 xfCare.speak
+
+============================================================
+七、改动文件清单（汇总）
+------------------------------------------------------------
+  1. app/models.py                     Notice.is_alert 列 + 正交注释
+  2. app/auth.py                       _migrate_notice_table 补 ALTER 项
+  3. app/portal.py                     home() 查 alerts 并传模板；notices() 加注释
+  4. app/templates/portal/home.html    .p-alert 滚动条 + 关怀循环朗读脚本
+  5. app/static/css/portal.css         .p-alert 系列样式 + care 字号联动
+  6. scripts/smoke_portal.py           [11] 预警条正交性断言
+  7. scripts/make_notice_demo.py       4 条测试数据构造（或由 smoke 内联）
+不动：notice.html / notice_doc.html（详情朗读与双版本）、notices.html（置顶标签已有）、
+      街道端发文/置顶接口、底部导航、api/notices.py 排序、ingest.py（is_alert 不随导入改）。

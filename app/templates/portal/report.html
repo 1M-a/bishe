@@ -3,17 +3,44 @@
 {% block body %}
 <div class="p-card">
   <h2><span class="bar"></span>说说遇到的事</h2>
+  <div id="summary" class="p-summary" aria-live="polite">
+    <span data-c="text" class="off">文字</span>
+    <span data-c="photo" class="off">照片</span>
+    <span data-c="voice" class="off">语音</span>
+  </div>
   <form id="f" autocomplete="on">
     <div class="p-field">
-      <label for="text">情况</label>
-      <textarea id="text" name="text" maxlength="2000" placeholder="说清楚发生了什么、在哪里。也可用手机键盘语音输入。" required></textarea>
+      <label for="text">文字说明 <span class="hint">选填，最多 1500 字</span></label>
+      <textarea id="text" name="text" maxlength="1500" placeholder="说清楚发生了什么、在哪里。也可用手机键盘语音输入。"></textarea>
     </div>
 
     <div class="p-field">
-      <label for="screenshots">截图或照片 <span class="hint">选填，最多 5 张</span></label>
+      <label for="screenshots">截图或照片 <span class="hint">选填，最多 10 张，单张不超过 5MB</span></label>
       <input id="screenshots" name="photos" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple>
       <div id="imageList" class="p-file-list" aria-live="polite"></div>
       <div id="ocrStatus" class="p-muted" aria-live="polite"></div>
+    </div>
+
+    <div class="p-field">
+      <label>语音说明 <span class="hint">选填，最长 5 分钟</span></label>
+      <button id="mic" class="p-mic" type="button" aria-live="polite">
+        <span class="p-mic-ico">🎙</span>
+        <span class="p-mic-t">开始录音</span>
+        <span class="p-mic-s">点击试试，最长可录 5 分钟</span>
+      </button>
+      <div id="micStatus" class="p-muted" aria-live="polite"></div>
+      <div id="micDone" class="p-mic-done" hidden>
+        <audio id="playback" controls></audio>
+        <p class="p-muted">已录好 <span id="micLen"></span>，可试听、重录或删除。</p>
+        <div class="p-mic-actions">
+          <button id="micRedo" class="p-btn-line" type="button">重录</button>
+          <button id="micClear" class="p-btn-line" type="button">删除</button>
+        </div>
+      </div>
+      <div id="micDenied" class="p-mic-denied" hidden>
+        <p>未获得麦克风权限。可在手机系统设置 → 应用 → 允许使用麦克风后返回。</p>
+        <p class="p-muted">不影响您使用文字或照片反馈。</p>
+      </div>
     </div>
 
     <div class="p-field">
@@ -46,9 +73,212 @@
   var input = document.getElementById('screenshots');
   var list = document.getElementById('imageList');
   var ocrStatus = document.getElementById('ocrStatus');
+  var textArea = document.getElementById('text');
   var submit = document.getElementById('submit');
   var err = document.getElementById('err');
   var detector = typeof window.TextDetector === 'function' ? new window.TextDetector() : null;
+
+  // ---- 语音四状态机：idle 未问过 / denied 已拒绝 / ready 已授权 /
+  // ---- recording 录音中 / done 录音完成。作用域只收在语音通道内部。
+  var voice = {
+    state: 'idle',
+    stream: null, rec: null, chunks: [], blob: null, url: null,
+    seconds: 0, timer: null, startAt: 0
+  };
+  var mic = document.getElementById('mic');
+  var micIco = mic.querySelector('.p-mic-ico');
+  var micT = mic.querySelector('.p-mic-t');
+  var micS = mic.querySelector('.p-mic-s');
+  var micStatus = document.getElementById('micStatus');
+  var micDone = document.getElementById('micDone');
+  var micLen = document.getElementById('micLen');
+  var micDenied = document.getElementById('micDenied');
+  var playback = document.getElementById('playback');
+
+  var MAX_TEXT = 1500, MAX_PHOTOS = 10, MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+  var MAX_AUDIO_SECONDS = 300;
+
+  function pickMime() {
+    if (window.MediaRecorder) {
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) return 'audio/webm;codecs=opus';
+      if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
+      if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
+    }
+    return '';
+  }
+
+  function fmtLen(s) {
+    return Math.floor(s / 60) + '分' + (s % 60 < 10 ? '0' : '') + (s % 60) + '秒';
+  }
+
+  function releaseStream() {
+    if (voice.stream) {
+      voice.stream.getTracks().forEach(function (t) { t.stop(); });
+      voice.stream = null;
+    }
+  }
+
+  function renderMic() {
+    var btnOn = false, txt = '开始录音', sub = '点击试试，最长可录 5 分钟', ico = '🎙';
+    if (voice.state === 'denied') {
+      // denied 按钮不禁用：误拒后允许在页面里点重试，而不是只能去刷新。
+      txt = '无法录音'; sub = '点这里重试，或在浏览器设置里开启麦克风';
+    } else if (voice.state === 'recording') {
+      txt = fmtLen(voice.seconds); sub = '录音中，点击停止';
+    } else if (voice.state === 'ready') {
+      txt = '开始录音'; sub = '麦克风已就绪，点击开始';
+    } else if (voice.state === 'done' && voice.blob) {
+      txt = '录音完成'; sub = '已停止占用麦克风，可试听、重录或删除';
+    }
+    micIco.textContent = ico;
+    micT.textContent = txt;
+    micS.textContent = sub;
+    mic.disabled = btnOn;
+    mic.classList.toggle('rec', voice.state === 'recording');
+  }
+
+  function stopTimer() {
+    if (voice.timer) { clearInterval(voice.timer); voice.timer = null; }
+  }
+
+  function finishRecord() {
+    stopTimer();
+    micDone.hidden = false;
+    playback.src = voice.url;
+    micLen.textContent = fmtLen(voice.seconds);
+    micStatus.textContent = '';
+  }
+
+  function startRecord() {
+    var mime = pickMime();
+    try {
+      voice.rec = new MediaRecorder(voice.stream, mime ? {mimeType: mime} : undefined);
+    } catch (e) {
+      voice.rec = new MediaRecorder(voice.stream);
+    }
+    voice.chunks = [];
+    voice.rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) voice.chunks.push(ev.data); };
+    voice.rec.onstop = function () {
+      var type = voice.rec && voice.rec.mimeType && voice.rec.mimeType.split(';')[0] || 'audio/webm';
+      if (voice.url) URL.revokeObjectURL(voice.url);
+      voice.blob = new Blob(voice.chunks, {type: type});
+      voice.url = URL.createObjectURL(voice.blob);
+      voice.state = 'done';
+      // 录音已落成 blob，原始流不再需要：立刻停掉 tracks。
+      // 不然麦克风指示灯会一直亮着，别的 App 也拿不到麦克风。
+      releaseStream();
+      renderMic(); finishRecord(); refreshSummary();
+    };
+    voice.rec.start();
+    voice.startAt = Date.now();
+    voice.seconds = 0;
+    voice.state = 'recording';
+    renderMic();
+    voice.timer = setInterval(function () {
+      voice.seconds = Math.floor((Date.now() - voice.startAt) / 1000);
+      if (voice.seconds <= MAX_AUDIO_SECONDS) renderMic();
+      if (voice.seconds >= MAX_AUDIO_SECONDS) stop();
+    }, 1000);
+  }
+
+  function stop() {
+    if (voice.rec && voice.rec.state !== 'inactive') voice.rec.stop();
+  }
+
+  mic.addEventListener('click', async function () {
+    err.textContent = '';
+    if (voice.state === 'denied') {
+      // 误拒权限后：按钮可点，点击=重试授权。mediaDevices 若不存在
+      // 或 getUserMedia 缺失（非安全上下文等），会维持 denied 并显示引导。
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        voice.state = 'denied';
+      } else {
+        try {
+          voice.stream = await navigator.mediaDevices.getUserMedia({audio: true});
+          voice.state = 'ready';
+          micDenied.hidden = true;
+        } catch (e) {
+          voice.state = 'denied';
+        }
+      }
+      renderMic();
+      refreshSummary();
+    } else if (voice.state === 'done') {
+      // 录音完成后点主按钮 = 想重录：回到 idle，下一拍重新申请权限。
+      // 重录/删除按钮也归到同一条路径，避免状态机出现旁路。
+      document.getElementById('micRedo').click();
+    } else if (voice.state === 'idle') {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        voice.state = 'denied';
+      }
+      if (voice.state !== 'denied') {
+        try {
+          voice.stream = await navigator.mediaDevices.getUserMedia({audio: true});
+          voice.state = 'ready';
+        } catch (e) {
+          voice.state = 'denied';
+        }
+      }
+      if (voice.state === 'denied') {
+        micDenied.hidden = false;
+        micDone.hidden = true;
+        renderMic();
+      } else {
+        micDenied.hidden = true;
+        renderMic();
+      }
+      refreshSummary();
+    } else if (voice.state === 'ready') {
+      micStatus.textContent = '';
+      micDone.hidden = true;
+      startRecord();
+    } else if (voice.state === 'recording') {
+      stop();
+    }
+  });
+
+  document.getElementById('micRedo').addEventListener('click', function () {
+    if (voice.url) { URL.revokeObjectURL(voice.url); voice.url = null; }
+    voice.blob = null;
+    playback.removeAttribute('src');
+    micDone.hidden = true;
+    voice.state = voice.stream ? 'ready' : 'idle';
+    micDenied.hidden = true;
+    renderMic(); refreshSummary();
+  });
+
+  document.getElementById('micClear').addEventListener('click', function () {
+    if (voice.url) { URL.revokeObjectURL(voice.url); voice.url = null; }
+    voice.blob = null;
+    playback.removeAttribute('src');
+    micDone.hidden = true;
+    voice.state = voice.stream ? 'ready' : 'idle';
+    micDenied.hidden = true;
+    voice.seconds = 0;
+    renderMic(); refreshSummary();
+  });
+
+  // ---- 汇总条：三通道实时状态 ----
+  function refreshSummary() {
+    var c = {};
+    c.text = textArea.value.trim().length > 0;
+    var files = Array.prototype.slice.call(input.files || []);
+    c.photo = files.length > 0;
+    c.voice = voice.blob !== null;
+    ['text', 'photo', 'voice'].forEach(function (k) {
+      var el = document.querySelector('#summary [data-c="' + k + '"]');
+      if (c[k]) {
+        el.classList.remove('off');
+        el.textContent = k === 'photo'
+          ? '照片(' + files.length + ')'
+          : k === 'voice' ? '语音(已录)'
+          : '文字';
+      } else {
+        el.classList.add('off');
+        el.textContent = k === 'photo' ? '照片' : k === 'voice' ? '语音' : '文字';
+      }
+    });
+  }
 
   async function recognize(files) {
     if (!detector || !files.length) return;
@@ -67,12 +297,12 @@
         }
       }
       if (!lines.length) throw new Error('no text found');
-      var area = document.getElementById('text');
-      area.value = (area.value.trim() ? area.value.trim() + '\n' : '') + lines.join('\n');
+      textArea.value = (textArea.value.trim() ? textArea.value.trim() + '\n' : '') + lines.join('\n');
       ocrStatus.textContent = '已识别，请核对文字后提交。';
     } catch (e) {
       ocrStatus.textContent = '未能自动识别；请填写文字说明后提交。';
     }
+    refreshSummary();
   }
 
   input.addEventListener('change', async function () {
@@ -85,36 +315,51 @@
       list.appendChild(row);
     });
     ocrStatus.textContent = files.length
-      ? (detector ? '正在尝试识别截图文字…' : '截图会作为附件保存，请同时填写文字说明。')
+      ? (detector ? '正在尝试识别截图文字…' : '截图会作为附件保存，可配合文字说明提交。')
       : '';
     await recognize(files);
+    refreshSummary();
   });
+
+  textArea.addEventListener('input', refreshSummary);
 
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
     err.textContent = '';
-    var text = document.getElementById('text').value.trim();
+    var text = textArea.value.trim();
     var phone = document.getElementById('phone').value.trim();
     var files = Array.prototype.slice.call(input.files || []);
     if (!/^1[3-9]\d{9}$/.test(phone)) {
       err.textContent = '请填写正确的 11 位手机号'; return;
     }
-    if (text.length < 5) {
-      err.textContent = '请再补充一些情况（至少 5 个字）'; return;
+    if (text.length > MAX_TEXT) {
+      err.textContent = '文字最多 ' + MAX_TEXT + ' 字，请精简后再提交'; return;
     }
-    if (files.length > 5 || files.some(function (f) { return f.size > 5 * 1024 * 1024; })) {
-      err.textContent = '最多上传 5 张图片，单张不超过 5MB'; return;
+    if (files.length > MAX_PHOTOS || files.some(function (f) { return f.size > MAX_PHOTO_BYTES; })) {
+      err.textContent = '最多上传 ' + MAX_PHOTOS + ' 张图片，单张不超过 5MB'; return;
+    }
+    if (!text && !files.length && !voice.blob) {
+      err.textContent = '请至少选一种反馈方式（文字 / 照片 / 语音）'; return;
+    }
+    if (voice.blob && voice.seconds > MAX_AUDIO_SECONDS) {
+      err.textContent = '语音不能超过 5 分钟，请重录'; return;
     }
 
     submit.disabled = true;
     submit.textContent = '正在提交…';
     var data = new FormData(form);
+    if (voice.blob) {
+      var ext = voice.blob.type.indexOf('mp4') >= 0 ? 'm4a' : 'webm';
+      data.append('audio', voice.blob, 'voice.' + ext);
+      data.append('audio_seconds', String(voice.seconds));
+    }
     try {
       var j = await api('/api/portal/report', {method: 'POST', body: data});
       if (j.code === 0 && j.data) {
-        if (j.data.photo_errors && j.data.photo_errors.length) {
-          alert('文字已提交，但有图片未保存：' + j.data.photo_errors.join('；'));
-        }
+        var warns = [];
+        if (j.data.photo_errors && j.data.photo_errors.length) warns.push('图片：' + j.data.photo_errors.join('；'));
+        if (j.data.audio_errors && j.data.audio_errors.length) warns.push('语音：' + j.data.audio_errors.join('；'));
+        if (warns.length) alert('内容已提交，但有些附件未保存：' + warns.join('；'));
         location.href = '/portal/done/' + j.data.ticket_id + (j.data.deduplicated ? '?merged=1' : '');
         return;
       }

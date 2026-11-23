@@ -18,6 +18,19 @@ from app.models import WorkOrder
 
 DEFAULT_PROPERTY_CO = "幸福里物业"
 
+
+def property_co() -> str:
+    """物业公司名：优先读 Config.ORG_NAMES["property_short"]（环境变量可覆盖），
+    无 app context（纯脚本调用）或未配置时回退到模块默认值。
+    页面文案（api/portal.py _line_to_org）与派单单位共用同一配置，口径一致。
+    """
+    try:
+        from flask import current_app
+        return (current_app.config.get("ORG_NAMES", {})
+                .get("property_short", DEFAULT_PROPERTY_CO))
+    except RuntimeError:
+        return DEFAULT_PROPERTY_CO
+
 # (等级, 办结时限小时, 关键词) —— 顺序即优先级，先命中先生效
 SLA_RULES = [
     ("紧急", 4, ("电梯困人", "困人", "燃气", "煤气味", "水管爆裂", "爆管", "停电", "漏电")),
@@ -41,6 +54,7 @@ class DispatchAgent(BaseAgent):
     name = "dispatch"
 
     def run(self, payload: dict) -> dict:
+        co = property_co()
         order_no = "W" + datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{payload['work_item_id']:02d}"
         # 工单内容只带本业务项摘要，不带整段首录原文：
         # ① 最小必要原则——整段原文可能含其他业务线事项（如人口登记）；
@@ -70,7 +84,7 @@ class DispatchAgent(BaseAgent):
         order = WorkOrder(
             order_no=order_no,
             work_item_id=payload["work_item_id"],
-            property_co=DEFAULT_PROPERTY_CO,
+            property_co=co,
             content=content,
             sla_hours=hours,
             sla_level=level,
@@ -82,12 +96,12 @@ class DispatchAgent(BaseAgent):
         # 什么时候派的"就只剩审计里那句话，工单时间线从"接单"才开始。
         from app import orderflow
         orderflow.push(order, "dispatch", actor="派单Agent", actor_org="系统",
-                       detail=f"派往 {DEFAULT_PROPERTY_CO}（{level} / {hours}h，{note}）")
+                       detail=f"派往 {co}（{level} / {hours}h，{note}）")
         self._audit("dispatch", payload["subject"],
-                    f"工单{order_no} → {DEFAULT_PROPERTY_CO}（{level}/{hours}h，{note}）")
+                    f"工单{order_no} → {co}（{level}/{hours}h，{note}）")
         return {
             "id": order.id, "order_no": order_no,
-            "property_co": DEFAULT_PROPERTY_CO, "sla_hours": hours,
+            "property_co": co, "sla_hours": hours,
             "sla_level": level, "status": "open", "content": content,
             "content_stub": content,   # 供调度器喂给复核 Agent，避免再查库
         }

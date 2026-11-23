@@ -39,6 +39,7 @@
   </div>
   <div class="card-b">
     <div style="background:#f6f9ff;border:1px solid #dbe7fb;border-radius:9px;padding:14px;font-size:13px;line-height:1.9;" id="dSummary"></div>
+    <div id="dSat" style="margin-top:12px;background:#fffdf3;border:1px solid #f3e6bf;border-radius:9px;padding:12px 14px;display:flex"></div>
     <div id="dChart" style="width:100%;height:260px;margin-top:14px;"></div>
     <div class="hint" style="margin-top:6px;font-size:12px;color:var(--muted)">
       导出件为报表快照的排版件：6 个工作表（概览 / 业务线 / 业务类型 / 工单 / 明细 / 填报说明），
@@ -147,6 +148,23 @@ async function showDetail(d){
     (d.rollback_from ? `（回滚自第 ${d.rollback_from} 版）` : '');
   document.getElementById('dExport').href = curId ? EXPORT(curId) : '#';
   document.getElementById('dSummary').textContent = d.summary;
+  // 满意度均值：街道只看均分健康度，不看具体是谁评的。
+  // 老报表（生成前）没有 satisfaction 快照，整块隐藏，不给用户看"—"。
+  const satEl = document.getElementById('dSat');
+  if (satEl) {
+    const sat = d.satisfaction || null;
+    if (sat && sat.avg !== null && sat.avg !== undefined) {
+      satEl.style.display = '';
+      satEl.innerHTML =
+        '<div style="flex:1;min-width:120px"><div class="hint" style="font-size:12px;color:var(--muted)">居民满意度均分（本期）</div>'
+        + '<div style="font-size:26px;font-weight:700;color:#206bc4;line-height:1.2">'
+        + sat.avg.toFixed(1) + ' <span style="font-size:13px;color:#9aa8b9">/ 5 星</span></div>'
+        + '<div style="font-size:12px;color:var(--muted)">已评 ' + sat.rated + ' 条'
+        + (sat.low ? '，含 ' + sat.low + ' 条低分（≤3 星）' : '') + '</div></div>';
+    } else {
+      satEl.style.display = 'none';
+    }
+  }
   // 换了一份报表，展开着的版本列表必须跟着换——留着上一份的历史会张冠李戴
   if (verOpen) loadVersions();
   const lines = Object.keys(d.line_counts);

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, current_app, request, session
 
 from app.api import fail, ok
-from app.auth import ROLE_NAMES
+from app.auth import ROLE_NAMES, current_user
 from app import arbitration, evidence
 from app.extensions import db
 from app.itemstate import STAGE_RESIDENT, stage as item_stage, sync_ticket_status
@@ -34,13 +34,19 @@ bp = Blueprint("portal", __name__)
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 
 # 业务线 → 居民看得懂的承办单位
-LINE_TO_ORG = {
-    "物业": "幸福里物业",
-    "综治": "社区综治",
-    "民政": "社区民政",
-    "卫健": "社区卫生",
-    "街道": "街道办事处",
-}
+#
+# 物业名不再写死在代码里：从 Config.ORG_NAMES["property_short"] 读取，
+# 演示版默认"幸福里物业"，部署到别区时由 ORG_PROPERTY_SHORT 环境变量覆盖，
+# 页面文案与派单单位（app/agents/dispatch.py）共用同一处配置，保证口径一致。
+def _line_to_org() -> dict:
+    cfg = current_app.config.get("ORG_NAMES", {})
+    return {
+        "物业": cfg.get("property_short", "幸福里物业"),
+        "综治": "社区综治",
+        "民政": "社区民政",
+        "卫健": "社区卫生",
+        "街道": cfg.get("street", "街道办事处"),
+    }
 
 # 查询码锁定：连错 5 次锁 30 分钟
 #
@@ -133,8 +139,15 @@ def _remember(ticket_id: int):
 
 
 def _append_ticket_photos(ticket: ResidentTicket, files: list, actor: str):
-    """安全追加居民图片；文件名随机化，内容哈希进入证据链。"""
-    current = evidence.load_attachments(ticket.attachments)
+    """安全追加居民图片；文件名随机化，内容哈希进入证据链。
+
+    room 只数照片（type != audio）：语音不占照片配额，反之追加语音也不
+    会因为已传照片被拒。
+    """
+    current = [a for a in evidence.load_attachments(ticket.attachments)
+               if a.get("type") != "audio"]
+    audio_items = [a for a in evidence.load_attachments(ticket.attachments)
+                   if a.get("type") == "audio"]
     room = max(0, evidence.MAX_PHOTOS - len(current))
     errors = []
     if len(files) > room:
@@ -145,10 +158,32 @@ def _append_ticket_photos(ticket: ResidentTicket, files: list, actor: str):
             files[:room], current_app.config["EVIDENCE_DIR"])
         errors.extend(rejected)
     if saved:
-        ticket.attachments = json.dumps(current + saved, ensure_ascii=False)
+        ticket.attachments = json.dumps(audio_items + current + saved,
+                                        ensure_ascii=False)
         for photo in saved:
             evidence.append("ticket", ticket.id, "attach", {
                 "name": photo["name"], "sha256": photo["sha256"], "size": photo["size"],
+            }, actor=actor)
+    return saved, errors
+
+
+def _append_ticket_audio(ticket: ResidentTicket, files: list, actor: str):
+    """安全追加居民语音；同样走哈希进链，落盘 data/evidence/audio/。
+
+    语音上限 1 条/次（前端每个提交只产生一个 blob）。重新录=覆盖：
+    新语音顶掉旧语音条目（老文件留盘但不再出现在单据里，演示口径简明）。
+    """
+    photo_items = [a for a in evidence.load_attachments(ticket.attachments)
+                   if a.get("type") != "audio"]
+    saved, errors = evidence.save_audio(
+        files[:1], current_app.config["EVIDENCE_DIR"])
+    if saved:
+        ticket.attachments = json.dumps(
+            photo_items + saved, ensure_ascii=False)
+        for audio in saved:
+            evidence.append("ticket", ticket.id, "attach", {
+                "name": audio["name"], "sha256": audio["sha256"],
+                "size": audio["size"], "mime": audio["mime"], "type": "audio",
             }, actor=actor)
     return saved, errors
 
@@ -201,7 +236,7 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
 
         state = STAGE_RESIDENT[item_stage(it, orders=orders, filed=it.id in filed_ids)]
 
-        orgs = [LINE_TO_ORG.get(l, l) for l in lines]
+        orgs = [_line_to_org().get(l, l) for l in lines]
         sla = max([o.sla_hours for o in orders], default=None)
         feedbacks = [o.feedback for o in orders if o.feedback]
         # 居民表态是**按事项**看的：一个诉求拆成"修灯"和"低保复核"两项，
@@ -278,6 +313,10 @@ def _payload(t: ResidentTicket, items: list, orders_map: dict, filed_ids: set) -
         "line_summary": t.line_summary,
         "confirm_status": confirm_overall,
         "can_confirm": any(r["can_confirm"] for r in rows),
+        # 满意度：评分只在这张单确认解决后才有；没评是 None，
+        # 默认 0 会让前端把"没评"画成"0 星"或误判已评分。
+        "rating": t.rating,
+        "rating_comment": t.rating_comment or "",
         # 附件只回文件名与大小，**不回存盘路径**：那个路径一旦透出，
         # 就等于给出"猜下一个文件名"的线索（虽然是 uuid，但没有必要给）。
         "attachments": [{"name": a.get("name", ""), "size": a.get("size", 0)}
@@ -313,6 +352,36 @@ def report():
     except TypeError:
         return fail("手机号、称呼、位置和情况必须是文字", 400), 400
 
+    # 登录门禁（RESIDENT_AUTH=1）：未登录直接 401；phone 以注册账号为准，
+    # 不接收自由填写的 phone（演示模式保持"手机号+查询码"双因子）。
+    auth_mode = bool(current_app.config.get("RESIDENT_AUTH"))
+    u = current_user() if auth_mode else None
+    if auth_mode and not u:
+        return fail("请先登录后再提交", 401), 401
+    if u:
+        phone = (u.phone or "").strip()
+
+    # 三通道平级：文字 / 照片 / 语音可任意组合，只有全空才拒绝。
+    photos = request.files.getlist("photos") if request.files else []
+    audio_files = request.files.getlist("audio") if request.files else []
+    has_media = bool(photos) or bool(audio_files)
+
+    # 语音时长兜底：webm/m4a 头解析不出时长，靠前端随表单上报的
+    # audio_seconds 复核（居民端是 MediaRecorder 自己的走秒，可信即可用），
+    # wav 能从头解析就用头解析值压掉上报值，防伪造。
+    audio_seconds = 0.0
+    if audio_files:
+        parsed = evidence.audio_files_to_seconds(audio_files)
+        if parsed:
+            audio_seconds = float(parsed)
+        else:
+            try:
+                audio_seconds = float(_string_field(data, "audio_seconds") or 0)
+            except (TypeError, ValueError):
+                audio_seconds = 0.0
+        if audio_seconds > evidence.MAX_AUDIO_SECONDS:
+            return fail("语音不能超过 5 分钟，请重录后提交", 400), 400
+
     # 三档限流：手机号是真实约束（一条诉求对应一个人），IP 是兜底，
     # 全局闸防"换手机号 + 换 IP"的脚本。全部在入参校验之前，
     # 否则伪造一堆非法手机号就能无限试探。
@@ -322,31 +391,66 @@ def report():
         return fail("提交太频繁，请稍后再试（同一手机号每分钟最多 5 次）", 429), 429
     if not _rate_ok(f"report:ip:{_client_ip()}", 30, 60):
         return fail("提交太频繁，请稍后再试", 429), 429
+    # 语音独立限流：录音文件大、又可能撞模型，与文字提交分开统计，
+    # 避免"频繁试录音"把同一入口的文字配额也吃光。
+    if audio_files and not _rate_ok(f"voice:{phone}", 5, 60):
+        return fail("语音提交太频繁，请稍后再试", 429), 429
 
     if not PHONE_RE.match(phone):
         return fail("请填写 11 位手机号，用于接收处理结果", 400), 400
-    if len(text) < 5:
+
+    # 文字校验：有照片或语音时文字可为空（三通道平级），否则最低 5 字。
+    if not has_media and len(text) < 5:
         return fail("请把情况说清楚一些（至少 5 个字）", 400), 400
-    if len(text) > 2000:
-        return fail("内容过长，请控制在 2000 字以内", 400), 400
+    if len(text) > 1500:
+        return fail("内容过长，请控制在 1500 字以内", 400), 400
 
     # 居民输入先过确定性质量层，再进入模型：模型只处理清洗后的文本，
     # 去重也基于同一份规范化文本，避免“您好！！！灯坏了”和“灯坏了”各建一单。
     normalized, quality_flags = normalize_text(text)
-    if len(normalized) < 5:
+    if not has_media and len(normalized) < 5:
         return fail("有效内容太少，请补充时间、地点或具体问题", 400), 400
-    previous, duplicate_kind, duplicate_score = find_duplicate(phone, normalized)
+    if has_media and not normalized:
+        # 纯媒体反馈（照片/语音，无文字）：给下游拆解一个可读的占位描述，
+        # 让业务项能正常立项；真实内容以附件为准（语音不进模型，方案 C）。
+        if audio_files and not photos:
+            normalized = "（语音反馈，详情见附件）"
+        elif photos and not audio_files:
+            normalized = "（照片反馈，详情见附件）"
+        else:
+            normalized = "（语音+照片反馈，详情见附件）"
+        if "媒体占位" not in quality_flags:
+            quality_flags.append("媒体占位")
+
+    # 纯媒体上报不参与文字去重（占位文本没有可去重的语义），
+    # 有文字才走 find_duplicate，避免两个不同照片事项被占位文本误合并。
+    previous = None
+    duplicate_kind = duplicate_score = ""
+    if "媒体占位" not in quality_flags:
+        previous, duplicate_kind, duplicate_score = find_duplicate(phone, normalized)
     if previous:
-        _remember(previous.id)
+        if not auth_mode:
+            _remember(previous.id)
         actor = f"居民(尾号{phone[-4:]})"
         saved, photo_errors = _append_ticket_photos(
-            previous, request.files.getlist("photos") if request.files else [], actor)
+            previous, photos, actor)
+        saved_audio, audio_errors = _append_ticket_audio(
+            previous, audio_files, actor)
+        extra = f"；追加图片 {len(saved)} 张"
+        if audio_files:
+            extra += (f"；追加语音 {len(saved_audio)} 条"
+                      + (f"（{audio_errors[0]}）" if audio_errors else ""))
         db.session.add(AuditLog(
             actor=actor, agent="portal", action="dedupe",
             input_digest=f"content={content_hash(normalized)[:16]}",
             output_digest=(f"命中诉求#{previous.id}，{duplicate_kind}，"
-                           f"相似度 {duplicate_score:.4f}；追加图片 {len(saved)} 张")[:250]))
+                           f"相似度 {duplicate_score:.4f}{extra}")[:250]))
         db.session.commit()
+        if saved_audio:
+            db.session.add(AuditLog(actor=actor, agent="portal",
+                                    action="voice_upload",
+                                    output_digest=f"诉求#{previous.id} 追加语音 {len(saved_audio)} 条"))
+            db.session.commit()
         return ok({
             "ticket_id": previous.id, "code": previous.code,
             "deduplicated": True, "duplicate_of": previous.id,
@@ -354,6 +458,7 @@ def report():
             "duplicate_score": duplicate_score,
             "quality_flags": quality_flags,
             "photos": len(saved), "photo_errors": photo_errors,
+            "audio": len(saved_audio), "audio_errors": audio_errors,
             "msg": "已找到相同诉求，继续使用原查询码",
         })
 
@@ -397,14 +502,16 @@ def report():
     # 建单时就应当是"已办结"而不是先写 open 等下一次 GET 来校正。
     sync_ticket_status(result["fde_id"])
 
-    # 照片：存盘 + 每张算哈希进链。
-    # 落盘失败不阻断提交——居民描述已经录进去了，因为"图没传上"让整单退回
+    # 照片与语音：分别存盘、每种算哈希进链。
+    # 落盘失败不阻断提交——居民描述已经录进去了，因为"声没传上"让整单退回
     # 等于把最要紧的信息也一起丢了。错误放在返回值里如实告诉居民。
     saved, photo_errors = evidence.save_photos(
-        request.files.getlist("photos") if request.files else [],
-        current_app.config["EVIDENCE_DIR"])
-    if saved:
-        ticket.attachments = json.dumps(saved, ensure_ascii=False)
+        photos, current_app.config["EVIDENCE_DIR"])
+    saved_audio, audio_errors = evidence.save_audio(
+        audio_files, current_app.config["EVIDENCE_DIR"])
+    merged_attach = list(saved) + list(saved_audio)
+    if merged_attach:
+        ticket.attachments = json.dumps(merged_attach, ensure_ascii=False)
 
     evidence.append("ticket", ticket.id, "submit", {
         "code": ticket.code,
@@ -412,16 +519,27 @@ def report():
         "item_count": ticket.item_count,
         "line_summary": ticket.line_summary,
         "photos": len(saved),
+        "audio": len(saved_audio),
     }, actor=label)
     for ph in saved:
         evidence.append("ticket", ticket.id, "attach", {
             "name": ph["name"], "sha256": ph["sha256"], "size": ph["size"],
         }, actor=label)
+    for au in saved_audio:
+        evidence.append("ticket", ticket.id, "attach", {
+            "name": au["name"], "sha256": au["sha256"],
+            "size": au["size"], "mime": au["mime"], "type": "audio",
+        }, actor=label)
 
     db.session.commit()
-    _remember(ticket.id)
+    if not auth_mode:
+        _remember(ticket.id)
     db.session.add(AuditLog(actor=label, agent="portal", action="submit",
                             input_digest="", output_digest=f"居民提交，拆出 {len(result['items'])} 项"))
+    if saved_audio:
+        db.session.add(AuditLog(actor=label, agent="portal",
+                                action="voice_upload",
+                                output_digest=f"居民上传语音 {len(saved_audio)} 条"))
     db.session.commit()
 
     return ok({
@@ -433,10 +551,12 @@ def report():
         "line_summary": ticket.line_summary,
         "photos": len(saved),
         "photo_errors": photo_errors,
+        "audio": len(saved_audio),
+        "audio_errors": audio_errors,
         "deduplicated": False,
         "quality_flags": quality_flags,
         "items": [{"type": it["type"], "subject": it["subject"],
-                   "orgs": [LINE_TO_ORG.get(l, l) for l in it["target_lines"]]}
+                   "orgs": [_line_to_org().get(l, l) for l in it["target_lines"]]}
                   for it in result["items"]],
         "llm_used": result["llm_used"],
     })
@@ -446,8 +566,17 @@ def report():
 
 @bp.get("/ticket")
 def query_ticket():
-    phone = (request.args.get("phone") or "").strip()
-    code = (request.args.get("code") or "").strip()
+    auth_mode = bool(current_app.config.get("RESIDENT_AUTH"))
+    u = current_user() if auth_mode else None
+    if auth_mode and not u:
+        return fail("请先登录", 401), 401
+    # 登录模式：手机号以注册账号为准，不接收自由填写的 phone
+    if u:
+        phone = (u.phone or "").strip()
+        code = (request.args.get("code") or "").strip()
+    else:
+        phone = (request.args.get("phone") or "").strip()
+        code = (request.args.get("code") or "").strip()
     # 限流必须落在**手机号**维度上：查询码只有 6 位，真正的攻击是"知道手机号后枚举查询码"，
     # 而 IP 在反向代理后面既不稳定、又可被 X-Forwarded-For 伪造，按 IP 限等于没限。
     if not _rate_ok(f"query:phone:{phone}", 20, 60):
@@ -463,17 +592,27 @@ def query_ticket():
     if not t:
         _note_query_fail(phone)
         return fail("没有查到对应记录，请核对手机号与查询码", 404), 404
-    _remember(t.id)
+    if not auth_mode:
+        _remember(t.id)
     return ok(_ticket_payload(t))
 
 
 @bp.get("/ticket/<int:tid>")
 def ticket_detail(tid: int):
+    auth_mode = bool(current_app.config.get("RESIDENT_AUTH"))
+    u = current_user() if auth_mode else None
+    if auth_mode and not u:
+        return fail("请先登录", 401), 401
     t = db.session.get(ResidentTicket, tid)
     if not t:
         return fail("没有查到对应记录", 404), 404
-    # 只允许看本会话提交过的单子，防止遍历 id 拿到别人的信息
-    if tid not in session.get("portal_tickets", []):
+    if auth_mode:
+        # 登录模式：按当前用户过滤本人诉求（uid ↔ ResidentTicket.phone），
+        # 只依赖账号绑定的手机号，不依赖本机会话（同机换账号不串）。
+        if t.phone != (u.phone or "").strip():
+            return fail("无权查看该记录", 403), 403
+    elif tid not in session.get("portal_tickets", []):
+        # 演示模式走本机会话留痕，防止遍历 id 拿到别人的信息
         return fail("无权查看该记录", 403), 403
     return ok(_ticket_payload(t))
 
@@ -487,7 +626,17 @@ def confirm_ticket(tid: int):
     只能表现为居民又提交一遍，然后被当成新单重新派出去。
     """
     t = db.session.get(ResidentTicket, tid)
-    if not t or tid not in session.get("portal_tickets", []):
+    if not t:
+        return fail("无权操作该记录", 403), 403
+    auth_mode = bool(current_app.config.get("RESIDENT_AUTH"))
+    u = current_user() if auth_mode else None
+    if auth_mode and not u:
+        return fail("请先登录", 401), 401
+    if auth_mode:
+        # 登录模式：只允许评价本人诉求（按账号绑定的手机号过滤）
+        if t.phone != (u.phone or "").strip():
+            return fail("无权操作该记录，这是其他居民提交的诉求"), 403
+    elif tid not in session.get("portal_tickets", []):
         return fail("无权操作该记录，请先用手机号和查询码查询"), 403
     if not _rate_ok(f"confirm:{tid}", 10, 60):
         return fail("操作太频繁，请稍后再试"), 429
@@ -502,13 +651,38 @@ def confirm_ticket(tid: int):
     try:
         note = _string_field(d, "note", 512)
         dispute_type = _string_field(d, "dispute_type")
+        rating_comment = _string_field(d, "rating_comment", 512)
     except TypeError:
         return fail("说明和争议类型必须是文字", 400), 400
+    # 星级只能 1–5 的整数。字符串"5"合法，5.5、0、6 一律拒绝——
+    # 半星/十分制会污染报表均分的统一口径（1–5 星是标准）。
+    # int(3.5) 会坍缩成 3，肉眼看着合法、均值却被悄悄改小，
+    # 所以先保证值是整数（float 且非整 或 字符串带小数点都拒）。
+    raw_rating = d.get("rating")
+    rating = None
+    if raw_rating not in (None, ""):
+        if isinstance(raw_rating, bool):
+            return fail("评分必须是 1–5 星的整数", 400), 400
+        if isinstance(raw_rating, float) and not raw_rating.is_integer():
+            return fail("评分必须是 1–5 星的整数", 400), 400
+        if isinstance(raw_rating, str) and "." in raw_rating:
+            return fail("评分必须是 1–5 星的整数", 400), 400
+        try:
+            rating = int(raw_rating)
+        except (TypeError, ValueError):
+            return fail("评分必须是 1–5 星的整数", 400), 400
+        if not 1 <= rating <= 5:
+            return fail("评分必须是 1–5 星的整数", 400), 400
     do_ok = raw is True or str(raw).lower() in ("1", "true", "yes", "ok")
     okc, msg, n = arbitration.resident_confirm(
         t, do_ok, note, dispute_type)
     if not okc:
         return fail(msg, 400), 400
+    # 满意度只在"确认解决"时收：没解决时收集 1 星，
+    # 等于把争议当评分发了，还占了街道报表的评价分母。
+    if do_ok and rating is not None:
+        t.rating = rating
+        t.rating_comment = rating_comment or ""
     sync_ticket_status(t.fde_id)
     db.session.commit()
     return ok({"affected": n, "msg": msg, "view": _ticket_payload(t)})
@@ -518,7 +692,16 @@ def confirm_ticket(tid: int):
 def attach_photo(tid: int):
     """补传照片。居民常常先打字说情况、过一会儿才想起拍图。"""
     t = db.session.get(ResidentTicket, tid)
-    if not t or tid not in session.get("portal_tickets", []):
+    if not t:
+        return fail("无权操作该记录"), 403
+    auth_mode = bool(current_app.config.get("RESIDENT_AUTH"))
+    u = current_user() if auth_mode else None
+    if auth_mode and not u:
+        return fail("请先登录", 401), 401
+    if auth_mode:
+        if t.phone != (u.phone or "").strip():
+            return fail("无权操作该记录，这是其他居民提交的诉求"), 403
+    elif tid not in session.get("portal_tickets", []):
         return fail("无权操作该记录"), 403
     if not _rate_ok(f"attach:{tid}", 6, 300):
         return fail("上传太频繁，请稍后再试"), 429

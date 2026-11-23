@@ -417,7 +417,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="真正写库")
     ap.add_argument("--purge", action="store_true", help="只清空底册")
+    ap.add_argument("--db", default="community.db",
+                    help="目标库文件名（写 data/ 下的 dev.db/trial.db/community.db），默认 community.db")
     args = ap.parse_args()
+
+    global DB
+    db_name = args.db if args.db.endswith(".db") else args.db + ".db"
+    DB = os.path.join(BASE, "data", db_name)
+    print("目标库：%s" % os.path.relpath(DB, BASE))
 
     if not os.path.exists(DB):
         raise SystemExit("找不到库：%s" % DB)

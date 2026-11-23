@@ -53,6 +53,11 @@ PERMS = {
     "notice.view": "查看通知公告",
     "notice.manage": "发布 / 下架 / 置顶公告",
     "notice.import": "导入 / 投递上级单位文件",
+    # 居民端语义点：登录后的居民能看到自己的诉求、进度与自己提交的评价。
+    # 展示端不写死角色就能访问的 URL（避免居民互相串号），权限点只给 resident。
+    "resident.report": "居民提交诉求与材料",
+    "resident.track": "居民查询本人办理进度",
+    "resident.rate": "居民评价办结工单",
     # 收文与办文再往下拆一层：
     # 签收 = 承认"我收到了、我要办"，办文 = 把上级要求落成本社区的执行通知。
     # 拆开的好处是社区内部可以分工——主任签收，经办人办文，责任各自留痕。
@@ -71,9 +76,11 @@ PERMS = {
     # 所以没有下放给街道——街道监督的是业务，不是账号。
     "user.manage": "管理账号与权限",
     # 人员底册：街道下发的重点人员台账（残疾人 / 防溺水 / 留守）。
-    # 只读一个权限点就够——底册由街道下发、系统导入，不该让人在页面里改，
-    # 改了会与下发表对不上，下次导入又被覆盖，责任还说不清。
+    # 查看是开放给社区的角色；导入是街道的管理动作——认读、清洗、去重
+    # 都在导入这一步完成，改完再导一次幂等合并，页面本身不提供编辑。
+    # 只给街道与管理员：社区拿到底册源文件直接上传，等于越过了街道的清洗。
     "person.view": "查看人员底册",
+    "person.import": "导入人员底册台账",
     "feedback.view": "查看模型纠错样本",
     "feedback.manage": "提交模型纠错并形成规则",
 }
@@ -91,6 +98,7 @@ PERM_GROUPS = [
     ("公文与周报", ["doc.view", "doc.manage", "weekly.view", "weekly.manage"]),
     ("账号治理", ["user.manage"]),
     ("模型改进", ["feedback.view", "feedback.manage"]),
+    ("人口底册", ["person.view", "person.import"]),
 ]
 
 # 社区内部按岗位授权。角色仍保持 community，避免业务接口里已有的角色边界失效；
@@ -119,10 +127,12 @@ COMMUNITY_PERMISSION_PROFILES = {
 
 # 角色 → 权限点集合（对应《总体设计》角色权限矩阵）
 ROLE_PERMS = {
-    # 居民：免注册、免登录，凭手机号 + 查询码办事。
+    # 居民：可登录角色（RESIDENT_AUTH=1 时经邀请码注册后登录），
+    # 只给"看公告 + 本人的诉求/进度/评价"这组最小权限。
     # 列在这里是为了让"四类使用者"在权限矩阵里有完整位置，
     # 也便于模板用同一套 can() 判断居民能看到什么。
-    "resident": {"notice.view"},
+    "resident": {"notice.view", "resident.report",
+                 "resident.track", "resident.rate"},
     # 普通社区工作者只保留登记、查询、办理与只读材料权限。
     # 发布、签发、裁决和知识维护改由用户级岗位模板授予。
     "community": set(COMMUNITY_BASE_PERMS),
@@ -133,9 +143,12 @@ ROLE_PERMS = {
     # task.manage 是街道唯一的写权限——下发任务属于"管理动作"，不是"办事动作"
     # notice.import 让街道把上级文件接进系统，但是否对外发布由社区确认
     # 公文与周报只读：街道是收文方，看得到报上来的请示与周报，但不替社区起草
+    # person.import 让街道上传台账：识别、清洗、去重、脱敏在服务端完成，
+    # 社区拿不到原始文件，身份证明文也不落库
     "street": {"order.view", "report.view", "audit.view", "kb.view",
                "task.view", "task.manage", "notice.view", "notice.import",
-               "doc.view", "weekly.view", "person.view", "meeting.view"},
+               "doc.view", "weekly.view", "person.view", "person.import",
+               "meeting.view"},
 }
 
 # 系统管理员：全部权限点。这一行必须是 set(PERMS) 而不是手写清单，
@@ -190,7 +203,7 @@ def valid_username(s: str) -> bool:
 
 # 登录后的默认落地页
 ROLE_HOME = {
-    "resident": "portal.home",
+    "resident": "portalviews.home",
     "community": "views.index",
     "property": "views.orders",
     "street": "views.tasks",
@@ -622,6 +635,10 @@ def _migrate_ticket_table():
         ("duplicate_of", "INTEGER"),
         ("duplicate_kind", "VARCHAR(16) DEFAULT ''"),
         ("duplicate_score", "FLOAT"),
+        # 满意度两列：老库补列时不给 DEFAULT，
+        # rating 保持 NULL（未评分），0 会被当"最低分"污染均值。
+        ("rating", "INTEGER"),
+        ("rating_comment", "TEXT DEFAULT ''"),
     )
     for col, ddl in additions:
         if col not in cols:
@@ -744,6 +761,9 @@ def _migrate_notice_table():
         ("received_at", "DATETIME"),
         ("deadline", "DATE"),
         ("pinned_at", "DATETIME"),
+        # ---- P1-5 预警标记：与 pinned 正交，只决定是否进首页滚动条。
+        # 新列默认 0（False），老行全为 0 → 现有公告不会凭空变预警进滚动条。
+        ("is_alert", "BOOLEAN DEFAULT 0"),
         # ---- P0 公文属性
         ("direction", "VARCHAR(8) DEFAULT 'in'"),
         ("doc_type", "VARCHAR(16) DEFAULT '通知'"),
@@ -846,7 +866,11 @@ def seed_users():
     演示账号重新种回来；管理员仍保留，后续账号由管理员手工创建。
     """
     demo = DEMO_USERS
-    if AuditLog.query.filter_by(action="data_clear").first() is not None:
+    # 登录模式（调整版/试用版，RESIDENT_AUTH=1）：不预置任何演示员工账号，
+    # 只有登录页和注册页，所有角色都靠邀请码注册（admin 是系统账号必须保留）；
+    # 与"清空业务数据后不再重灌演示账号"同口径。
+    if current_app.config.get("RESIDENT_AUTH") or \
+            AuditLog.query.filter_by(action="data_clear").first() is not None:
         demo = DEMO_USERS[:1]
     created = []
     for d in demo:
@@ -886,7 +910,8 @@ def seed_tasks():
     """
     from datetime import timedelta
     from app.models import Task
-    if AuditLog.query.filter_by(action="data_clear").first() is not None:
+    if current_app.config.get("RESIDENT_AUTH") or \
+            AuditLog.query.filter_by(action="data_clear").first() is not None:
         return 0
     if Task.query.count() > 0:
         return 0

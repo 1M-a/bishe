@@ -97,6 +97,13 @@ def _sheet_overview(wb, r, d):
     prev = d.get("prev") or {}
     lines = d.get("line_counts") or {}
     types = d.get("type_counts") or {}
+    sat = d.get("satisfaction") or {}
+    # 满意度均分：老报表没有 satisfaction 快照就显示"—"，
+    # 绝不能用 0 冒充——街道拿到 0 分会以为居民普遍打 0 星。
+    sat_avg = sat.get("avg")
+    sat_note = (f"已评星 {sat.get('rated', 0)} 条诉求的均分（1~5 星），"
+                f"含 {sat.get('low', 0)} 条低分；未评星不计入分母"
+                if sat_avg is not None else "本期暂无评星数据")
 
     metrics = [
         ("首录事项（条）", d.get("fde_count", 0), prev.get("fde_count", 0),
@@ -117,17 +124,22 @@ def _sheet_overview(wb, r, d):
          "命中已有台账条目而免于重复填报的次数"),
         ("敏感信息脱敏（批次）", d.get("sensitive_count", 0), None,
          "含身份证/手机号等字段，经本地模型脱敏后入库"),
+        ("居民满意度（均分）", sat_avg, None,
+         sat_note),
     ]
 
     r0 = hdr + 1
     for i, (name, cur, pv, note) in enumerate(metrics):
         rr = r0 + i
         is_pct = name == "工单办结率"
+        is_score = name == "居民满意度（均分）"
         sh.cell(rr, 1, name, S.label)
         if cur is None:
             sh.cell(rr, 2, "—", S.text_c)
         elif is_pct:
             sh.cell(rr, 2, cur, S.pct)
+        elif is_score:
+            sh.cell(rr, 2, cur, S.money)
         else:
             sh.cell(rr, 2, cur, S.num)
         if pv is None:

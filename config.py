@@ -65,6 +65,11 @@ class Config:
     # 那是客户端可伪造的，限流与取证都会失真。
     TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"
 
+    # 多地试用：当前站点代号（A/B/C…），与邀请码 site 比对，跨区码自动失效
+    SITE_CODE = os.environ.get("SITE_CODE", "A")
+    # 居民端是否要求注册登录：1=要求（需邀请码注册后登录），0=免注册演示模式
+    RESIDENT_AUTH = os.environ.get("RESIDENT_AUTH", "0") == "1"
+
     # 登录失败限流：**账号维度**是主维度（IP 在代理后面不可靠，见 auth.py 注释）
     LOGIN_MAX_FAIL = int(os.environ.get("LOGIN_MAX_FAIL", "5"))
     LOGIN_IP_MAX_FAIL = int(os.environ.get("LOGIN_IP_MAX_FAIL", "30"))
@@ -73,8 +78,9 @@ class Config:
     # 上传体积上限。Flask 默认**不限**，而居民端是公网匿名入口——
     # 不设这条，一个 500MB 的 POST 就能把 2C2G 的内存吃干，
     # 而且 Flask 会先把整个 body 读进内存再交给视图，拦不住。
-    # 5 张 × 5MB 再加表单开销，取 28MB。
-    MAX_CONTENT_LENGTH = int(os.environ.get("MAX_UPLOAD_MB", "28")) * 1024 * 1024
+    # 10 张 × 5MB + 语音 15MB 再加表单开销，取 70MB。
+    # 单文件上限由 evidence.py 各自的字节常量把关，这里是整体兜底。
+    MAX_CONTENT_LENGTH = int(os.environ.get("MAX_UPLOAD_MB", "70")) * 1024 * 1024
 
     # 证据附件落盘目录。跟着数据库放在 data/ 下，备份脚本一并带走；
     # 不放 app/static/ ——放那里等于把居民照片变成可直接访问的静态资源。
@@ -121,11 +127,19 @@ class Config:
 
     # 通知公告：上级单位把文件丢进这个目录，自动解析发布
     # 支持 .md（带元信息头）/ .docx / .txt；解析不完整的转"待确认"，需人工补全
-    NOTICE_DIR = os.path.join(BASE_DIR, "data", "notices")
+    NOTICE_DIR = os.environ.get("NOTICE_DIR", os.path.join(BASE_DIR, "data", "notices"))
     NOTICE_AUTO_IMPORT = os.environ.get("NOTICE_AUTO_IMPORT", "1") == "1"
     # 运行期间的后台扫描间隔（秒）。0 = 关闭，只在启动时扫一次。
     # 「文件丢进去就自动上线」靠的就是它，没有它就得点按钮或重启。
     NOTICE_SCAN_INTERVAL = int(os.environ.get("NOTICE_SCAN_INTERVAL", "60"))
+
+    # 多地试用：区域组织名（居民端"找谁办事"三级单位与工单承办单位显示用）
+    ORG_NAMES = {
+        "street": os.environ.get("ORG_STREET", "幸福里街道办事处"),
+        "community": os.environ.get("ORG_COMMUNITY", "幸福里社区居民委员会"),
+        "property": os.environ.get("ORG_PROPERTY", "幸福里物业服务有限公司"),
+        "property_short": os.environ.get("ORG_PROPERTY_SHORT", "幸福里物业"),
+    }
 
 
 class DevConfig(Config):

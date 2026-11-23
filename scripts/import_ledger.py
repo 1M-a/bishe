@@ -223,11 +223,16 @@ class Collector:
         self.stat["新增"] += 1
 
 
-def read_disabled(c):
-    """残疾人台账：17 列，表头在第 2 行，社区列（第 8 列）是明确的。"""
+def read_disabled(c, src=None):
+    """残疾人台账：17 列，表头在第 2 行，社区列（第 8 列）是明确的。
+
+    `src` 传 None 时读 SRC_DIR 下的默认文件（命令行用）；网页上传时
+    传入 BytesIO 直接解析，原文件不落盘——身份证明文明文不进磁盘。
+    """
     import openpyxl
-    p = os.path.join(SRC_DIR, FILES["disabled"][0])
-    wb = openpyxl.load_workbook(p, data_only=True)
+    if src is None:
+        src = os.path.join(SRC_DIR, FILES["disabled"][0])
+    wb = openpyxl.load_workbook(src, data_only=True)
     ws = wb.worksheets[0]
     for r in range(3, ws.max_row + 1):
         name = ws.cell(row=r, column=2).value
@@ -249,11 +254,16 @@ def read_disabled(c):
     wb.close()
 
 
-def read_drowning(c):
-    """防溺水台账：21 列，无社区列，只能从地址推。"""
+def read_drowning(c, src=None):
+    """防溺水台账：21 列，无社区列，只能从地址推。
+
+    `src` 语义与 read_disabled 相同：None 走 SRC_DIR 默认文件，否则解析
+    传入的路径/BytesIO（网页上传时用后者，身份证明文不落盘）。
+    """
     import openpyxl
-    p = os.path.join(SRC_DIR, FILES["drowning"][0])
-    wb = openpyxl.load_workbook(p, data_only=True)
+    if src is None:
+        src = os.path.join(SRC_DIR, FILES["drowning"][0])
+    wb = openpyxl.load_workbook(src, data_only=True)
     ws = wb.worksheets[0]
     for r in range(3, ws.max_row + 1):
         name = ws.cell(row=r, column=2).value
@@ -304,38 +314,60 @@ def check_templates():
     return out
 
 
+def summarize(c):
+    """清洗结果 → dict。命令行 `report()` 与网页预览共用同一份统计口径。
+
+    为什么抽出来：网页上传后预览要显示「识别了多少行、去重后多少人、
+    地址精度分布、社区归属、标签分布、风险权重」。如果网页再自己算一遍，
+    口径一旦漂移（比如统计"新增"的方式不一样），预览和最终入库就对不上。
+    """
+    rows = list(c.rows.values())
+    lvl = Counter(r["addr_level"] for r in rows)
+    w = Counter(max(t[2] for t in r["tags"]) for r in rows)
+    return {
+        "stat": dict(c.stat),                       # 原始行/新增/跳过/合并明细
+        "total": len(rows),                         # 去重后人数
+        "addr_levels": {str(k): lvl.get(k, 0)
+                        for k in (3, 2, 1, 0)},     # 3=门号 2=单元 1=楼栋/组 0=无法定位
+        "communities": Counter(r["community"] or "（未明确）"
+                               for r in rows).most_common(),
+        "tags": Counter(t[0] for r in rows for t in r["tags"]),
+        "multi_tag": sum(1 for r in rows
+                         if len({t[0] for t in r["tags"]}) > 1),
+        "weights": {"3": w.get(3, 0), "2": w.get(2, 0), "1": w.get(1, 0)},
+    }
+
+
 def report(c):
     print("\n=== 清洗结果 ===")
     for k in sorted(c.stat):
         print("  %-20s %d" % (k, c.stat[k]))
 
-    rows = list(c.rows.values())
-    print("\n=== 去重后人数：%d ===" % len(rows))
+    s = summarize(c)
+    print("\n=== 去重后人数：%d ===" % s["total"])
 
-    lvl = Counter(r["addr_level"] for r in rows)
+    lvl = s["addr_levels"]
     print("地址定位精度：")
     for level, label in ((3, "栋+单元+门号"), (2, "栋+单元"),
                          (1, "仅到楼栋/组"), (0, "无法定位")):
-        n = lvl.get(level, 0)
-        print("  %-14s %5d  %5.1f%%" % (label, n, n / len(rows) * 100 if rows else 0))
+        n = lvl.get(str(level), 0)
+        print("  %-14s %5d  %5.1f%%" % (label, n, n / s["total"] * 100 if s["total"] else 0))
 
     print("社区归属：")
-    for k, v in Counter(r["community"] or "（未明确）" for r in rows).most_common():
+    for k, v in s["communities"]:
         print("  %-14s %5d" % (k, v))
 
     print("标签分布：")
-    tag_kind = Counter(t[0] for r in rows for t in r["tags"])
-    for k, v in tag_kind.most_common():
+    for k, v in s["tags"].most_common():
         print("  %-10s %5d" % (k, v))
-    multi = sum(1 for r in rows if len({t[0] for t in r["tags"]}) > 1)
-    print("  多标签人数  %5d" % multi)
+    print("  多标签人数  %5d" % s["multi_tag"])
 
-    w = Counter(max(t[2] for t in r["tags"]) for r in rows)
+    w = s["weights"]
     print("最高风险权重：3=%d  2=%d  1=%d"
-          % (w.get(3, 0), w.get(2, 0), w.get(1, 0)))
+          % (w["3"], w["2"], w["1"]))
 
 
-def apply(c, purge=False):
+def apply(c, purge=False, app=None):
     from app import create_app
     from app.extensions import db
     from app.models import Person, PersonTag
@@ -346,7 +378,10 @@ def apply(c, purge=False):
                  "gphone": "guardian_phone", "addr": "address"}
 
     batch = datetime.now().strftime("%y%m%d%H%M")
-    app = create_app("dev")
+    if app is None:
+        # 命令行入口：自建 app（dev 配置，读 DATABASE_URL）；
+        # 网页上传时由调用方把当前运行中的 app 传进来，避免另开一条连接
+        app = create_app("dev")
     with app.app_context():
         if purge:
             # 先删子表再删主表：反了会 FOREIGN KEY constraint failed（person_tag 指向 person）
@@ -377,32 +412,52 @@ def apply(c, purge=False):
                                          detail=detail, risk_weight=w))
             added += 1
         db.session.commit()
+        total = Person.query.count()
+        tags_total = PersonTag.query.count()
         print("  写入：新增 %d 人，补充标签 %d 人，批次 %s" % (added, merged, batch))
-        print("  库内合计：%d 人 / %d 标签"
-              % (Person.query.count(), PersonTag.query.count()))
+        print("  库内合计：%d 人 / %d 标签" % (total, tags_total))
+        return {"added": added, "merged": merged, "batch": batch,
+                "total": total, "tags_total": tags_total}
 
 
-def backup():
-    """用 sqlite3.backup() 而不是复制文件：复制会丢 WAL 里未 checkpoint 的事务。"""
+def backup(db_path=None):
+    """用 sqlite3.backup() 而不是复制文件：复制会丢 WAL 里未 checkpoint 的事务。
+
+    `db_path` 传 None 时用模块级 DB（命令行入口），否则用传入的库文件
+    （网页上传时当前运行的库，见 app/__init__._sqlite_path）。
+    返回备份文件的绝对路径，供审计与提示用。
+    """
     import sqlite3
+    if db_path is None:
+        db_path = DB
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dst = os.path.join(BASE, "data", "backups", "community-before-import-%s.db" % stamp)
+    base = os.path.splitext(os.path.basename(db_path))[0]
+    dst = os.path.join(BASE, "data", "backups", "%s-before-import-%s.db" % (base, stamp))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    src = sqlite3.connect(DB)
+    src = sqlite3.connect(db_path)
     out = sqlite3.connect(dst)
     with out:
         src.backup(out)
     out.close()
     src.close()
     print("  已备份 → %s" % os.path.relpath(dst, BASE))
+    return dst
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default="community.db",
+                    help="目标库文件名（写 data/ 下的 dev.db/trial.db/community.db），默认 community.db")
     ap.add_argument("--check", action="store_true", help="只统计，不写库")
     ap.add_argument("--apply", action="store_true", help="写库（自动备份）")
     ap.add_argument("--purge", action="store_true", help="先清空旧底册")
     args = ap.parse_args()
+
+    global DB
+    db_name = args.db if args.db.endswith(".db") else args.db + ".db"
+    DB = os.path.join(BASE, "data", db_name)
+    os.environ["DATABASE_URL"] = "sqlite:///" + DB.replace("\\", "/")
+    print("目标库：%s" % os.path.relpath(DB, BASE))
 
     missing = [f for f, _, _ in FILES.values()
                if not os.path.exists(os.path.join(SRC_DIR, f))]

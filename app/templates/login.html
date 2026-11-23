@@ -50,6 +50,7 @@
         <button class="submit" type="submit">登 录</button>
       </form>
 
+      {% if demo_users %}
       <div class="divider"><span>演示账号 · 点击自动填入</span></div>
 
       <div class="roles">
@@ -69,24 +70,39 @@
         </button>
         {% endfor %}
       </div>
+      {% endif %}
 
       <div class="note">🔐 所有登录、越权尝试均写入审计日志，可在街道账号的「审计日志」中查看。</div>
 
       <a class="join-entry" href="{{ url_for('admin.register') }}">
         <span class="re-ico">🧑‍💻</span>
+        {% if config.get('RESIDENT_AUTH') %}
+        <span>
+          <b>凭邀请码注册账号</b>
+          <small>邀请码自动绑定单位 · 工作人员待审核 · 居民注册即开通</small>
+        </span>
+        {% else %}
         <span>
           <b>新同事？申请工作账号</b>
           <small>自助填表 → 管理员审核 → 按岗位授权</small>
         </span>
+        {% endif %}
         <span class="re-arrow">›</span>
       </a>
 
       <a class="resident-entry" href="{{ url_for('portalviews.home') }}">
         <span class="re-ico">🏠</span>
+        {% if config.get('RESIDENT_AUTH') %}
+        <span>
+          <b>我是居民</b>
+          <small>凭居民邀请码注册后登录 · 反映问题 · 查办理进度 · 看公告</small>
+        </span>
+        {% else %}
         <span>
           <b>我是居民，不是工作人员</b>
           <small>反映问题 · 查办理进度 · 看公告 · 找谁办事（无需登录）</small>
         </span>
+        {% endif %}
         <span class="re-arrow">›</span>
       </a>
     </div>

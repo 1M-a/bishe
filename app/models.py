@@ -350,6 +350,11 @@ class Notice(db.Model):
     # 置顶时间：多条同时置顶时按它排先后（后置顶的在上），
     # 只靠布尔值的话几条置顶会退化成"按发稿时间排"，后置顶的反而排后面
     pinned_at = db.Column(db.DateTime)
+    # is_alert = 预警：只决定是否进首页滚动条（portal/home.html 的 .p-alert）。
+    # 与 pinned 严格正交 —— pinned 只管列表排序 + "置顶"标签，is_alert 只进滚动条，
+    # 两者互不可替：禁止用标题含"预警"判预警，也禁止把 pinned=1 的公告自动塞进滚动条。
+    # （由演示口径直接标注，随文件导入/街道端发文都不写这一列。）
+    is_alert = db.Column(db.Boolean, default=False)
     created_by = db.Column(db.String(32), default="system")
     created_at = db.Column(db.DateTime, default=datetime.now)
     published_at = db.Column(db.DateTime)
@@ -438,8 +443,31 @@ class ResidentTicket(db.Model):
     # 只存哈希与随机文件名，不存原文件名——原名可能叫"3栋201身份证.jpg"，
     # 落盘后一旦目录被列，等于把门牌和证件类型一起送出去。
     attachments = db.Column(db.Text, default="")
+    # 满意度：居民确认"已解决"后追加的 1–5 星评分与可选一句话。
+    # rating 为空/NULL 表示未评分（0 不合法：0 会被当"最低分"算进均值）。
+    # 街道报表只统计已评分的诉求，均分口径必须有明确分母。
+    rating = db.Column(db.Integer)
+    rating_comment = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now)
+
+
+class InviteCode(db.Model):
+    """邀请码：按区域/角色/单位批量生成，注册时绑定，一码一人
+
+    内部角色（community/property/street）注册时 role/org 直接取码绑定值，
+    不再由注册表自行填写，避免"填了个不存在的小区/乱挂单位"这种错数据；
+    居民码绑定本区，site 与当前部署的 SITE_CODE 不一致时注册直接拒绝
+    （跨区码失效）。码表由 scripts/gen_invites.py 生成，管理员截图发群即可。
+    """
+    __tablename__ = "invite_code"
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(16), unique=True, nullable=False, index=True)
+    role = db.Column(db.String(16), nullable=False)   # community/property/street/resident
+    org = db.Column(db.String(64), nullable=False)    # 码绑定单位全名或简称
+    site = db.Column(db.String(4), nullable=False)    # A/B/C，跨区校验用
+    used_by = db.Column(db.String(32), default="")    # 已用账号；空=未用
+    created_at = db.Column(db.DateTime, default=datetime.now)
 
 
 class ModelFeedback(db.Model):

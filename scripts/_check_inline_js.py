@@ -13,6 +13,8 @@ import tempfile
 import urllib.request
 
 NODE = r"C:\Users\10517\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+if not __import__("os").path.exists(NODE):
+    NODE = "node"                          # 回退到 PATH 上的 node
 BASE = "http://127.0.0.1:5000"
 
 # (账号, 密码, 页面列表)

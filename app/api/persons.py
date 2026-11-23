@@ -19,6 +19,8 @@
 3. **match 端点只认门号级命中**。模糊到"栋"会把整栋楼几十户都算成
    "这户有重点人员"，提级就没有区分度了。
 """
+import io
+
 from flask import Blueprint, request, send_file
 
 from app.api import fail, ok
@@ -177,3 +179,101 @@ def _col_name(n: int) -> str:
         n, r = divmod(n - 1, 26)
         s = chr(65 + r) + s
     return s
+
+
+# ---------------------------------------------------------------------------
+# 台账上传导入。街道在页面直接传街道下发的那两张真实 Excel（残疾人 / 防溺水），
+# 识别、清洗、去重、脱敏一股脑走 scripts/import_ledger 里那套 Collector，
+# 命令行与网页共用一把尺子，预览口径和入库口径不会漂移。
+#
+# 输入是从 request.files 进来的 BytesIO，**不落盘**——原件里有居民身份证，
+# 明文不该碰磁盘。数据只进内存解析，解析完这一批散掉。
+#
+# 权限用 person.import（街道与管理员才有，见 app/auth.py ROLE_PERMS）：
+# 社区就算拿到底册原件，让他直接传也说不清清洗责任，Upload 不该给社区。
+# ---------------------------------------------------------------------------
+def _read_upload(kind_field="kind") -> tuple:
+    """把上传文件读成 BytesIO，顺带做扩展名校验。
+
+    返回 (bio, kind)；字段缺失/类型不对抛 ImportFormatError，
+    由两个端点各自的 try 转成 fail(400)。
+    """
+    from app.ledger_import import ImportFormatError
+
+    up = request.files.get("file")
+    if up is None or not up.filename:
+        raise ImportFormatError("请选择要上传的台账文件（.xlsx）")
+    name = (up.filename or "").lower()
+    if not name.endswith(".xlsx"):
+        raise ImportFormatError(
+            "仅支持 .xlsx（街道下发的 Excel 原件）。%s 不是 Excel 文件。"
+            % up.filename)
+    kind = (request.form.get(kind_field) or "auto").strip() or "auto"
+    bio = io.BytesIO(up.read())
+    return bio, kind
+
+
+def _import_error(e):
+    """导入相关异常统一转 400，「用户传错文件」不是服务器 500。"""
+    from app.ledger_import import ImportFormatError
+    if isinstance(e, ImportFormatError):
+        return fail(str(e)), 400
+    raise e
+
+
+@bp.post("/import/preview")
+@perm_required("person.import")
+def import_preview():
+    """识别 + 清洗预览：只统计不写库。
+
+    页面先传一次让街道确认「识别成什么、去重剩多少人、地址能到几级」，
+    看清了再点确认导入。预览不落盘、不建任务、不进审计——
+    什么都没发生，只是把文件读了一遍。
+    """
+    from app import ledger_import
+
+    try:
+        bio, kind = _read_upload()
+        c, real = ledger_import.collect(bio, kind)
+    except Exception as e:
+        return _import_error(e)
+    data = ledger_import.preview(c, real)
+    if data["total"] == 0:
+        data["note"] = ("这份文件读完后一条有效记录都没有：要么是空表头模板"
+                        "（留守儿童表就是 14 列的空模板），要么身份证/姓名列"
+                        "都没填。确认没问题再点导入，或者换一份原件。")
+    else:
+        data["note"] = ""
+    return ok(data)
+
+
+@bp.post("/import/apply")
+@perm_required("person.import")
+def import_apply():
+    """确认导入：备份 → 写库 → 审计。
+
+    purge=1 表示先清空旧底册再导（换街道下发批次时用）；不 purge 则
+    同一身份证只补标签、不重复建人。全程幂等，重复传同一份文件不会
+    产生重复记录。
+    """
+    from app import ledger_import
+
+    try:
+        bio, kind = _read_upload()
+        c, real = ledger_import.collect(bio, kind)
+        if len(c.rows) == 0:
+            return fail("这份文件清洗后一条有效记录都没有，没有可导入的内容"), 400
+    except Exception as e:
+        return _import_error(e)
+
+    purge = (request.form.get("purge") or "").strip() in ("1", "true", "on")
+    result = ledger_import.apply(
+        c, real, current_user().name,
+        purge=purge, app=_get_app())
+    return ok(result)
+
+
+def _get_app():
+    """当前运行中的 Flask app 实例，传给导入使其复用同一连接。"""
+    from flask import current_app
+    return current_app._get_current_object()

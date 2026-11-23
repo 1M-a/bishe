@@ -37,6 +37,13 @@ a { color: var(--brand); text-decoration: none; }
 }
 .p-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .p-head-row > div { min-width: 0; }
+.p-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.p-care {
+  font-size: 12px; color: #fff; border: 1px solid rgba(255,255,255,.5);
+  padding: 5px 10px; border-radius: 999px; white-space: nowrap; flex-shrink: 0;
+  background: transparent; cursor: pointer; font-family: inherit;
+}
+.p-care.on { background: #7ee2b8; color: #16408f; border-color: #7ee2b8; font-weight: 700; }
 .p-brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
 .p-brand .dot { width: 9px; height: 9px; border-radius: 50%; background: #7ee2b8; box-shadow: 0 0 0 4px rgba(126,226,184,.22); }
 .p-staff {
@@ -44,6 +51,33 @@ a { color: var(--brand); text-decoration: none; }
   padding: 5px 10px; border-radius: 999px; white-space: nowrap; flex-shrink: 0;
 }
 .p-staff:hover { background: rgba(255,255,255,.16); }
+.p-logout-form { display: inline; margin: 0; }
+.p-logout { background: transparent; cursor: pointer; font-family: inherit; }
+
+/* ---------- 关怀模式：body.care 放大字号 ----------
+ * 只在开关打开时生效；用 1.25 倍字号对全部细节整体放大，
+ * 而非逐个类去改 font-size 常量（新旧页面一视同仁）。 */
+body.care { font-size: 20px; }
+body.care .p-brand { font-size: 21px; }
+body.care .p-card h2 { font-size: 20px; }
+body.care .p-muted, body.care .p-item .meta,
+body.care .p-item .sum, body.care .p-tl .s,
+body.care .p-field .hint, body.care .p-file-item { font-size: 15px; }
+body.care .p-cta .t { font-size: 22px; }
+body.care .p-alert, body.care .p-alert-item { font-size: 16px; }
+body.care .p-tile .t { font-size: 18px; }
+body.care .p-item .ttl { font-size: 18px; }
+body.care .p-field label { font-size: 17px; }
+body.care .p-field input, body.care .p-field textarea, body.care .p-field select { font-size: 19px; }
+body.care .p-btn { font-size: 20px; }
+body.care .p-btn-line { font-size: 16px; }
+body.care .p-org .n { font-size: 18px; }
+body.care .p-org .d, body.care .p-org .line { font-size: 16px; }
+body.care .p-tl .t { font-size: 16px; }
+body.care .p-tl .fb { font-size: 15px; }
+body.care .doc-body { font-size: 18px; }
+body.care .doc-meta { font-size: 14px; }
+body.care .p-nav a { font-size: 13px; }
 
 /* ---------- 容器 ---------- */
 .p-main { box-sizing: border-box; width: 100%; max-width: 720px; min-width: 0; margin: 0 auto; padding: 16px 14px 8px; }
@@ -69,6 +103,33 @@ details.p-card > summary {
   color: var(--ink); font-size: 16px; font-weight: 600;
 }
 details.p-card[open] > summary { margin-bottom: 10px; }
+
+/* ---------- 首页滚动预警条 ----------
+ * 只由 is_alert=1 且已发布的公告渲染（模板 {% if alerts %} 控制）；
+ * 无预警时整个元素不渲染，不占位。整体是一个 <a>，点击进网页版详情。
+ * overflow:hidden 为 375px 宽度横向不溢出的兜底。 */
+.p-alert {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff4e5; border: 1px solid #ffd9a0; border-radius: 12px;
+  padding: 10px 12px; margin-bottom: 14px; color: #8a4b00;
+  text-decoration: none; overflow: hidden; box-sizing: border-box;
+  width: 100%; position: relative;
+  box-shadow: 0 2px 10px rgba(184, 115, 11, .12);
+}
+.p-alert:active { background: #ffefd3; }
+.p-alert-ico { font-size: 16px; flex-shrink: 0; line-height: 1; }
+.p-alert-arrow { margin-left: auto; font-size: 16px; color: #c9852e;
+                 flex-shrink: 0; line-height: 1; }
+.p-alert-ticker { flex: 1; min-width: 0; overflow: hidden; }
+.p-alert-track {
+  display: inline-flex; white-space: nowrap; will-change: transform;
+}
+.p-alert-track.roll { animation: pAlertRoll 16s linear infinite; }
+@keyframes pAlertRoll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }  /* 双份副本位移一半 = 无缝循环 */
+}
+.p-alert-item { display: inline-block; padding-right: 36px; font-size: 14px; }
 
 /* ---------- 大按钮 ---------- */
 .p-cta {
@@ -113,6 +174,14 @@ details.p-card[open] > summary { margin-bottom: 10px; }
 .p-field { min-width: 0; margin-bottom: 16px; }
 .p-field label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .p-field .hint { font-size: 12px; color: var(--ink-3); font-weight: 400; margin-left: 6px; }
+
+/* 三通道汇总条：展示文字/照片/语音平级参与状态 */
+.p-summary { display: flex; gap: 8px; flex-wrap: wrap; margin: -2px 0 14px; padding: 10px 12px; background: var(--brand-soft); border-radius: 10px; }
+.p-summary span { font-size: 13px; color: var(--ink-3); padding: 3px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--line); }
+.p-summary span.on { color: var(--brand); border-color: var(--brand); font-weight: 600; }
+.p-summary span.off::before { content: "☐ "; }
+.p-summary span.on::before { content: "☑ "; }
+
 .p-field input, .p-field textarea, .p-field select {
   box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; padding: 12px 13px; font-size: 16px; color: var(--ink);
   border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe;
@@ -164,6 +233,23 @@ details.p-card[open] > summary { margin-bottom: 10px; }
 .p-progress h2 { justify-content: center; }
 .p-file-list { display: grid; gap: 4px; margin-top: 8px; }
 .p-file-item { overflow-wrap: anywhere; color: var(--ink-2); font-size: 12px; }
+
+/* ---------- 语音四状态机入口 ---------- */
+.p-mic {
+  display: block; width: 100%; text-align: center; padding: 18px 14px;
+  border: 2px dashed var(--brand); border-radius: 12px; background: var(--brand-soft);
+  color: var(--brand); font-family: inherit; cursor: pointer;
+}
+.p-mic:disabled { opacity: .55; cursor: not-allowed; }
+.p-mic.rec { border-style: solid; background: #fdecec; border-color: var(--danger); color: var(--danger); }
+.p-mic-ico { display: block; font-size: 34px; line-height: 1.15; }
+.p-mic-t { display: block; font-weight: 700; font-size: 16px; margin-top: 5px; }
+.p-mic-s { display: block; font-size: 12px; opacity: .75; margin-top: 3px; font-weight: 400; }
+.p-mic-done audio { width: 100%; }
+.p-mic-done p { margin: 8px 0; }
+.p-mic-actions { display: flex; gap: 10px; }
+.p-mic-denied { margin-top: 9px; padding: 10px 12px; background: #fff8ee; border: 1px solid #f0d8a8; border-radius: 10px; font-size: 13px; }
+.p-mic-denied p { margin: 4px 0; }
 .p-privacy { margin: 0 0 10px; }
 .p-field input[type="file"] {
   display: block; min-width: 0; max-width: 100%; padding: 9px; font-size: 14px;

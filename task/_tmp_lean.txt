@@ -1,0 +1,106 @@
+社智通 · 精简版功能补齐
+精简版精确落地方案
+基线 E:\program\decrease a\bishe · 精确到文件与字段
+居民端：组合反馈 / 关怀 / 预警 / 催办 / 投诉 / 满意度
+街道端：不开发，仅演示核对
+2026 年 11 月 21 日
+一、基线确认与现状
+我已逐文件核对精简版现状，可复用的现成能力与缺口如下：
+二、P0 组合反馈（核心需求，先做）
+2.1 目标
+文字、拍照、语音三种反馈平级可选、任意组合：可只用一种、任意两种、或三种一起。三通道全空才拒绝提交。
+2.2 前端改造 app/templates/portal/report.html
+现有文字 textarea（2000 字）和照片 input（5 张）保留，把"手机键盘语音输入"的提示换成真正的录音通道。
+2.3 语音通道四状态（只管语音，不管其他）
+2.4 后端改造 app/api/portal.py
+2.5 验收
+只发文字 / 只发照片 / 只发语音 → 三种单独都能提交成功；
+文字+照片 / 文字+语音 / 照片+语音 / 三者一起 → 四种组合都能提交成功；
+三通道全空 → 提示"至少选一种反馈方式"，不入库；
+拒绝麦克风权限 → 语音置灰但文字/照片仍可提交；
+进度页能看到该诉求用了哪几种通道（见第四节标签）。
+三、P0 关怀模式
+3.1 前端 portal/base.html + portal.css
+在页头 p-head-row 里、工作人员入口旁加一个"关怀模式"开关按钮（不用恢复已下线的"我的"页，a.txt 判断正确）。
+开关读/写 localStorage.getItem/setItem('xf_care', '1'/'0')；
+开启给 body 加 care 类，portal.css 里 body.care 放大字号变量（--font 系列）；
+关闭移除 care 类并停止朗读。
+3.2 朗读 portal/notice_doc.html
+进入公告详情时按 care 状态决定是否用 speechSynthesis 朗读全文；开启关怀模式时从首页进入也自动朗读。浏览器不支持则静默跳过（if (!window.speechSynthesis) return;），不报错。
+四、P1 进度标签 + 催办 + 投诉 + 满意度
+4.1 进度页加"反馈形式标签"
+位置：portal/ticket.html 的进度卡下方。做法：后端 _payload() 返回 channels: ["文字","照片","语音"]（从附件 type 推导），前端渲染成小标签。效果：居民看到系统确实收到了他的语音/照片，直接呼应组合反馈。
+4.2 催办（portal.py + ticket.html）
+4.3 投诉（新增独立入口）
+位置：base.html 底部导航或首页加"投诉"入口，指向新的 /portal/complaint，复用 report.html 的三通道输入组件。后端新建轻量表 Complaint（phone、content、photos、audio、status、created_at），进入人工处理队列。
+4.4 满意度（最省事、最加分）
+在办结确认卡（ticket.html 的 confirmCard）里，居民点"已解决"后追加 1–5 星评分 + 可选一句话（可复用语音通道）。后端 ResidentTicket 加 rating、rating_comment 两列；街道报表可展示满意度均值。
+五、滚动预警条
+位置：portal/home.html 顶部（CTA 卡之前）。数据源：给 Notice 加 is_alert 布尔列（比复用 level=预警 更明确，a.txt 建议采纳），查 is_alert=1 且 pinned 且已发布 的最新一条。无预警则整个条隐藏。点击进公告详情；关怀模式下接 speechSynthesis 循环朗读。
+六、街道端：不开发，只核对
+街道端精力放在演示口径：重点讲"监督者≠执行者"（唯一写权限 task.manage），比加任何功能都值钱。
+七、一周执行顺序（按投入产出）
+每项落地后统一回归：python -m compileall app 编译检查、scripts/smoke_portal.py 补断言、375×667 手机尺寸截图验证、scripts/audit_all.py 体检。
+--- table 0 ---
+基线锁定：E:\program\decrease a\bishe（精简版）。本方案只针对这份代码，我之前基于完整版的所有"已实现"结论作废。
+--- table 1 ---
+现成能力（复用，别重造） | 位置
+限流 _rate_ok(key, n, 60) | app/api/portal.py，report 用的三档限流
+图片附件 _append_ticket_photos() | app/api/portal.py，含去重时追加图片
+文本清洗 normalize_text() + 去重 find_duplicate() | app/api/portal.py
+审计 AuditLog(actor, agent, action, ...) | app/models.py:279
+红黄绿灯 traffic_light + 确认/仲裁 | portal.py _payload + ticket.html
+公告置顶 Notice.pinned / pinned_at | app/models.py:349/352
+统一请求封装 window.api() | portal/base.html
+--- table 2 ---
+确认的缺口：无语音、无关怀模式、无滚动预警条、无催办路由、无投诉入口、无满意度；文字上限 2000 字、照片上限 5 张（a.txt 说的口径对）。
+--- table 3 ---
+块 | 具体改动
+文字区 | 保留 <textarea id="text" maxlength="2000">，加小字"可不填，若选语音/照片则自动补充"
+照片区 | 保留 id="screenshots" multiple + TextDetector OCR；label 保持"最多 5 张"
+语音区（新增） | 一个大录音按钮 按住说话 + 状态提示 + 试听 audio + 重录/删除按钮；不作为降级入口，而是第三个平级通道
+汇总条（新增） | 顶部"已选：☑文字 ☑照片(2) ☑语音"实时反映三通道填写状态
+提交校验 | 把现有 text.length < 5 的硬校验改为：若有照片或语音则可放宽文字长度；三通道全空才提示"至少选一种反馈方式"
+--- table 4 ---
+状态 | 表现
+未问过 | 大字按钮，点击才请求麦克风权限，不主动弹框
+已授权 | 点按开始录音，再点停止；MediaRecorder 录制 webm/wav
+已拒绝 | 显示"如何开启权限"引导卡 + 提示"不影响您用文字或照片反馈"；语音按钮置灰，其他两通道照常用
+录音完成 | 可试听、可重录、可删除；上传前本地保存 audio blob
+--- table 5 ---
+关键：四状态机是 a.txt 的好设计，保留；但它的作用域收窄为"语音通道内部"，不再决定文字/照片是否显示——这是与你需求对齐的核心改动。
+--- table 6 ---
+项 | 做法
+report() 接参 | 现有已接 request.files.getlist("photos")，再加 request.files.get("audio")
+文字校验放宽 | 把 len(text) < 5 改为：若 photos 或 audio 非空，则允许 text 短至 0；否则维持 ≥5
+音频落盘 | 复用照片存盘的目录约定，音频存 data/evidence/audio/，文件名 uuid；校验：时长 ≤60s、大小 ≤5MB、类型白名单
+关联诉求 | 音频路径写进 ResidentTicket 的附件字段（复用现有 attachments 机制，加 type=audio 标记）
+审计 | 复用 AuditLog，action="voice_upload"，actor 沿用 居民(尾号****)
+限流 | 音频上传复用 _rate_ok(f"voice:{phone}", ...)，与 report 共用通道
+--- table 7 ---
+转写策略：本期语音只存音频不转文字（方案 C）。理由：一周时间、零外部依赖、组合反馈已满足。文字可由居民自行填或用照片 OCR 补充。别为本期引入 ASR 模型。
+--- table 8 ---
+口径：非关怀模式不朗读是设计（不打扰普通用户），不是 bug——答辩时主动说明。朗读用系统本地语音合成，无网络调用，符合口径。
+--- table 9 ---
+项 | 做法
+路由 | 新增 @bp.post("/ticket/<int:tid>/urge")
+限流 | 复用 _rate_ok(f"urge:{phone}:{tid}", 1, 86400)——24h 内同一诉求限 1 次
+记录 | ResidentTicket 加 last_urged_at 列（ALTER TABLE 兼容旧库，参考项目现有迁移写法）；写 AuditLog(action="urge")
+按钮 | ticket.html 进度卡加"催一催"，点击后禁用并显示"今天已催过"
+社区侧 | 社区工作台列表给该诉求加"居民催办"小标识（独立字段，不改 traffic_light 红黄绿灯口径）
+--- table 10 ---
+与"不服仲裁"区分：仲裁=不认同处理结果（ticket.html 已有），投诉=对服务过程/态度不满（新入口）。两者分开，答辩时说明体现闭环完整。若一周时间紧，投诉可只做"入口+落库+人工看"，不做复杂流程。
+--- table 11 ---
+这是评分细则"效果数据"最直接的未来来源——真实试用时收上来的星级，就是量化满意度的证据。
+--- table 12 ---
+核实结论：街道 S1–S8 在精简版同样完整，本期不改代码。唯一联动可选：把满意度均值接进街道报表（依赖 4.4）；居民催办上联街道督办中心（P2）时间紧就暂缓。
+--- table 13 ---
+序 | 任务 | 复杂度 | 改动文件
+1 | 关怀模式（页头开关+朗读） | 低 | base.html / portal.css / notice_doc.html
+2 | 满意度（1–5 星） | 低 | ticket.html / portal.py / models.py
+3 | 组合反馈（三通道并存+语音） | 中 | report.html / portal.py / models.py
+4 | 进度形式标签 + 催办 | 中 | ticket.html / portal.py / models.py
+5 | 滚动预警条 | 低 | home.html / portal.py / models.py / portal.css
+6 | 投诉入口（可只做入口+落库） | 中 | 新 complaint 入口 / 新表
+--- table 14 ---
+时间建议：若只够做前 4 项，优先保"组合反馈 + 满意度 + 关怀模式"——这三块直接对应老师要看的居民端和你缺的证据。投诉与预警条可延后。

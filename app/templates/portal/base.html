@@ -18,7 +18,15 @@
     <div>
       <div class="p-brand"><span class="dot"></span>幸福里 · 居民服务</div>
     </div>
-    <a class="p-staff" href="{{ url_for('views.login') }}">工作人员入口</a>
+    <div class="p-head-actions">
+      <button type="button" class="p-care" id="careToggle" aria-pressed="false" onclick="window.xfCare.toggle()">关怀</button>
+      {% if current_user %}
+      {# 已登录（登录模式居民，或开着系统来看的受控人员）：给退出入口 #}
+      <form method="post" action="{{ url_for('views.logout') }}" class="p-logout-form"><button type="submit" class="p-staff p-logout" title="退出登录">退出</button></form>
+      {% else %}
+      <a class="p-staff" href="{{ url_for('views.login') }}">工作人员入口</a>
+      {% endif %}
+    </div>
   </div>
 </div>
 
@@ -65,6 +73,89 @@ window.api = function (url, opts) {
     throw e;
   });
 };
+
+/* ---------------- 关怀模式 ----------------
+ * 页头开关 → localStorage 记忆 → body.care 类驱动 CSS 放大字号。
+ * 打开后：页面字号整体上调（见 portal.css body.care），返回公告详情时
+ * 用浏览器本地语音合成朗读全文（speechSynthesis，无网络调用）。
+ * 这里把朗读能力也暴露出去（xfCare.speak），公告朗读/预警条循环朗读复用。
+ */
+window.xfCare = {
+  KEY: 'xf_care',
+  isOn: function () { return localStorage.getItem(this.KEY) === '1'; },
+  btn: function () { return document.getElementById('careToggle'); },
+  apply: function () {
+    var on = this.isOn();
+    document.body.classList.toggle('care', on);
+    var btn = this.btn();
+    if (btn) {
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.textContent = on ? '关怀：开' : '关怀';
+    }
+    if (!on && window.speechSynthesis) window.speechSynthesis.cancel();
+  },
+  toggle: function () {
+    var next = this.isOn() ? '0' : '1';
+    localStorage.setItem(this.KEY, next);
+    this.apply();
+  },
+  /* 暂停 / 继续切换。返回当前朗读状态，供按钮更新文案。 */
+  togglePause: function () {
+    var sv = window.speechSynthesis;
+    if (!sv) return 'idle';
+    if (sv.paused) { sv.resume(); return 'speaking'; }
+    if (sv.speaking) { sv.pause(); return 'paused'; }
+    return 'idle';
+  },
+  stop: function () {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  },
+  /* 朗读全文或片段；不支持 or 关怀关闭 or 正在朗读时静默返回。
+   * "进入中不打断已有朗读"：上一页还没读完，进详情时不强插新朗读。 */
+  speak: function (text, opts) {
+    if (!this.isOn()) return false;
+    if (!window.speechSynthesis) return false;
+    if (window.speechSynthesis.speaking) return false;
+    if (!text || !text.trim()) return false;
+    var sv = window.speechSynthesis;
+    var o = opts || {};
+    var t = text.replace(/\s+/g, ' ').trim();
+    /* Chrome/Edge 的经典坑：页面才加载完时 getVoices() 还是空列表，
+     * 此时直接 speak 会无声排队、永不发声（开发者以为是"没读到"）。
+     * 先等 voiceschanged 就绪再讲；没有事件通道就立即讲；
+     * 300ms 兜底：偶发 voiceschanged 不触发时也不能让朗读彻底卡死。 */
+    var say = function () {
+      var u = new SpeechSynthesisUtterance(t);
+      u.lang = o.lang || 'zh-CN';
+      u.rate = o.rate || 0.95;
+      u.pitch = o.pitch || 1;
+      if (o.onStart) u.onstart = o.onStart;
+      if (o.onPause) u.onpause = o.onPause;
+      if (o.onResume) u.onresume = o.onResume;
+      if (o.onEnd) u.onend = u.onerror = o.onEnd;
+      sv.cancel();
+      setTimeout(function () { sv.speak(u); }, 10);
+    };
+    var ready = sv.getVoices && sv.getVoices().length > 0;
+    if (ready || !(sv.addEventListener && sv.getVoices)) {
+      say();
+    } else {
+      var settled = false;
+      var once = function () {
+        if (settled) return;
+        settled = true;
+        sv.removeEventListener('voiceschanged', once);
+        say();
+      };
+      sv.addEventListener('voiceschanged', once);
+      if (sv.getVoices) sv.getVoices();
+      setTimeout(once, 300);
+    }
+    return true;
+  }
+};
+window.xfCare.apply();
 </script>
 {% block script %}{% endblock %}
 </body>
